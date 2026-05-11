@@ -1,0 +1,21 @@
+# ============================================================
+# flutter_launcher_icons.yaml — CORRIGÉ
+# Utilise uniquement icon_source.png (pas de fichier foreground séparé)
+# Lance : dart run flutter_launcher_icons
+# ============================================================
+
+flutter_launcher_icons:
+
+  # ── Android ────────────────────────────────────────────────
+  android: true
+  image_path_android: "assets/icons/icon_source.png"
+
+  # Icône adaptative Android 8+ : on utilise le même fichier
+  # le fond navy est appliqué automatiquement comme couleur de fond
+  adaptive_icon_background: "#0F1B2D"
+  adaptive_icon_foreground: "assets/icons/icon_source.png"
+
+  # ── iOS ────────────────────────────────────────────────────
+  ios: true
+  image_path_ios:   "assets/icons/icon_source.png"
+  remove_alpha_ios: true   # Obligatoire pour l'App Store Apple

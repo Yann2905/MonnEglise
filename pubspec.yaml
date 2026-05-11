@@ -1,0 +1,85 @@
+# ============================================================
+# FICHIER : pubspec.yaml
+# REDESIGN "SANCTUAIRE" — Icône + Splash natif ajoutés
+# ============================================================
+
+name: mon_eglise
+description: Application de gestion d'église pour administrateurs et membres
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── Backend ────────────────────────────────────────────────
+  supabase_flutter: ^2.5.0
+
+  # ── État ───────────────────────────────────────────────────
+  provider: ^6.1.1
+
+  # ── UI / UX ────────────────────────────────────────────────
+  cupertino_icons: ^1.0.6
+  flutter_svg: ^2.0.9
+  cached_network_image: ^3.3.0
+  rflutter_alert: ^2.0.7
+  shimmer: ^3.0.0
+  qr_flutter: ^4.1.0
+  share_plus: ^10.0.0
+
+  # ── Polices Google ─────────────────────────────────────────
+  google_fonts: ^6.2.1
+
+  # ── Animations ─────────────────────────────────────────────
+  animations: ^2.0.11
+  flutter_animate: ^4.5.0
+  lottie: ^3.1.2
+
+  # ── Formulaires & validation ───────────────────────────────
+  intl: 0.20.2
+  intl_phone_field: ^3.1.0
+  flutter_form_builder: ^10.2.0
+  form_builder_validators: ^11.1.2
+
+  # ── Images & médias ────────────────────────────────────────
+  image_picker: ^1.0.7
+  file_picker: ^8.1.7
+  just_audio: ^0.9.40
+
+  # ── Utilitaires ────────────────────────────────────────────
+  shared_preferences: ^2.2.2
+  url_launcher: ^6.2.1
+  flutter_local_notifications: ^19.5.0
+  flutter_local_notifications_platform_interface: ^9.1.0
+  table_calendar: ^3.0.9
+  fl_chart: ^0.65.0
+
+  # ── HTTP & API ─────────────────────────────────────────────
+  http: ^1.1.0
+  dio: ^5.4.0
+
+  path: any
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^3.0.1
+  build_runner: ^2.4.6
+
+  # ── Icône de l'app ─────────────────────────────────────────
+  flutter_launcher_icons: ^0.14.1
+
+  # ── Splash screen natif ────────────────────────────────────
+  flutter_native_splash: ^2.4.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/icons/
+    # Décommenter quand tu crées le dossier assets/animations/ :
+    # - assets/animations/

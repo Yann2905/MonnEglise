@@ -1,0 +1,27 @@
+# ============================================================
+# flutter_native_splash.yaml — CORRIGÉ
+# Pas de fichier branding séparé requis
+# Lance : dart run flutter_native_splash:create
+# ============================================================
+
+flutter_native_splash:
+
+  # ── Couleurs de fond ───────────────────────────────────────
+  color:      "#F7F4EF"   # Mode clair  → parchemin
+  color_dark: "#0F1B2D"   # Mode sombre → navy
+
+  # ── Image centrale ─────────────────────────────────────────
+  image:      assets/icons/icon_source.png
+  image_dark: assets/icons/icon_source.png
+
+  # ── Android 12+ ────────────────────────────────────────────
+  android_12:
+    image:                    assets/icons/icon_source.png
+    image_dark:               assets/icons/icon_source.png
+    icon_background_color:    "#0F1B2D"
+    icon_background_color_dark: "#0F1B2D"
+
+  android: true
+  ios:     true
+  web:     false
+  fullscreen: false

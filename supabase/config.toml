@@ -1,0 +1,9 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Supabase CLI configuration
+# Doc : https://supabase.com/docs/guides/cli/config
+# ─────────────────────────────────────────────────────────────────────────────
+
+project_id = "moneglise"
+
+[functions.send-sms-otp]
+  verify_jwt = false
