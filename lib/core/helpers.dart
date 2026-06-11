@@ -43,6 +43,13 @@ class Helpers {
     return formatter.format(date);
   }
 
+  /// Date + heure à la seconde — pour les notifications : "21/05/2026 à 08:42:15"
+  static String formatDateTimeFull(DateTime date) {
+    final local = date.toLocal();
+    final formatter = DateFormat("dd/MM/yyyy 'à' HH:mm:ss");
+    return formatter.format(local);
+  }
+
   // ========== FORMATAGE NUMÉRO DE TÉLÉPHONE ==========
   // Ajoute +225 si absent
   static String formatPhoneNumber(String phone) {

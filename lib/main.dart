@@ -6,16 +6,20 @@
  * et définit toutes les routes de navigation de l'application
  */
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/date_symbol_data_local.dart'; // ✅ Pour le calendrier en français
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 
+import 'firebase_options.dart';
+import 'services/push_notifications_service.dart';
 import 'supabase_config.dart';
 
 import 'screens/splash_screen.dart';
 import 'screens/auth/login_screen.dart';
+import 'screens/auth/church_code_screen.dart';
 import 'screens/auth/register_choice_screen.dart';
 import 'screens/auth/register_admin_screen.dart';
 import 'screens/auth/register_member_screen.dart';
@@ -49,11 +53,19 @@ void main() async {
     ),
   );
 
+  // ✅ Initialisation de Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
   // ✅ Initialisation de Supabase
   await Supabase.initialize(
     url: SupabaseConfig.supabaseUrl,
     anonKey: SupabaseConfig.supabaseAnonKey,
   );
+
+  // ✅ Init notifications push (FCM + handlers locaux)
+  await PushNotificationsService.init();
 
   runApp(
     MultiProvider(
@@ -87,12 +99,35 @@ class MyApp extends StatelessWidget {
           ),
           themeMode: themeProvider.themeMode,
 
+          // ✅ Builder global : fournit un DefaultTextStyle SANS décoration
+          // → supprime les "doubles soulignés jaunes" debug de Flutter
+          //   qui apparaissent quand un Text est hors d'un Material ancestor.
+          builder: (context, child) {
+            final brightness = MediaQuery.platformBrightnessOf(context);
+            final isDark = themeProvider.themeMode == ThemeMode.dark ||
+                (themeProvider.themeMode == ThemeMode.system &&
+                    brightness == Brightness.dark);
+            return DefaultTextStyle(
+              style: TextStyle(
+                inherit: false,
+                fontFamily: IOSTheme.fontFamily,
+                fontSize: 16,
+                color: isDark
+                    ? const Color(0xFFFFFFFF)
+                    : const Color(0xFF000000),
+                decoration: TextDecoration.none,
+              ),
+              child: child!,
+            );
+          },
+
           initialRoute: '/',
 
           routes: {
             '/':                  (context) => const SplashScreen(),
             '/login':             (context) => const LoginScreen(),
             '/register-choice':   (context) => const RegisterChoiceScreen(),
+            '/church-code':       (context) => const ChurchCodeScreen(),
             '/register-admin':    (context) => const RegisterAdminScreen(),
             '/register-member':   (context) => const RegisterMemberScreen(),
             '/member-welcome':    (context) => const MemberWelcomeScreen(),

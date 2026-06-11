@@ -29,28 +29,54 @@ class _MembersScreenState extends State<MembersScreen> {
   final _supabase = Supabase.instance.client;
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
-  String? _adminId;
+  String? _churchId;
   bool _isLoading = true;
   List<UserModel> _members = [];
+  RealtimeChannel? _channel;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = Provider.of<AuthProvider>(context, listen: false);
-      _adminId = auth.currentUser?.id;
+      _churchId = auth.currentUser?.churchId;
       _load();
+      _subscribe();
     });
   }
 
   @override
   void dispose() {
+    _channel?.unsubscribe();
     _searchCtrl.dispose();
     super.dispose();
   }
 
+  /// Realtime : reload à chaque modif d'un user de l'église
+  void _subscribe() {
+    final churchId = _churchId;
+    if (churchId == null || churchId.isEmpty) return;
+    _channel?.unsubscribe();
+    _channel = _supabase
+        .channel('admin_members_$churchId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'users',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'church_id',
+            value: churchId,
+          ),
+          callback: (_) {
+            if (mounted) _load();
+          },
+        )
+        .subscribe();
+  }
+
   Future<void> _load() async {
-    if (_adminId == null) {
+    if (_churchId == null) {
       if (mounted) setState(() => _isLoading = false);
       return;
     }
@@ -59,7 +85,7 @@ class _MembersScreenState extends State<MembersScreen> {
       final data = await _supabase
           .from('users')
           .select()
-          .eq('church_id', _adminId!)
+          .eq('church_id', _churchId!)
           .order('first_name');
       if (!mounted) return;
       setState(() {
@@ -163,6 +189,7 @@ class _MembersScreenState extends State<MembersScreen> {
             largeTitle: const Text('Membres'),
             backgroundColor:
                 IOSTheme.groupedBackground(context).withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
           ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),

@@ -22,11 +22,13 @@ class FamilyModel {
   // ID du responsable de la famille
   final String responsibleId;
 
-  // Nombre de membres dans la famille
+  // Nombre de membres — TOUJOURS calculé via la vue v_families_enriched
+  // (jamais écrit en base, source de vérité = table family_members)
   final int memberCount;
 
-  // Liste des IDs des membres
-  final List<String> memberIds;
+  // Famille institutionnelle (Comité des responsables) — auto-créée par église,
+  // jamais affichée dans la liste normale, pas utilisée pour l'appel.
+  final bool isInstitutional;
 
   // Date de création
   final DateTime createdAt;
@@ -41,7 +43,7 @@ class FamilyModel {
     required this.name,
     required this.responsibleId,
     this.memberCount = 0,
-    this.memberIds = const [],
+    this.isInstitutional = false,
     required this.createdAt,
     this.updatedAt,
   });
@@ -51,17 +53,16 @@ class FamilyModel {
   // =========================================================
 
   // Factory principal pour Supabase (snake_case)
+  // Lit depuis la vue `v_families_enriched` qui inclut member_count calculé.
   factory FamilyModel.fromJson(Map<String, dynamic> json) {
     return FamilyModel(
       id: json['id'] as String,
       churchId: json['church_id'] as String,
       name: json['name'] as String,
-      responsibleId: json['responsible_id'] as String,
+      // responsible_id peut être null (famille sans responsable après retrait)
+      responsibleId: (json['responsible_id'] as String?) ?? '',
       memberCount: json['member_count'] as int? ?? 0,
-      memberIds: (json['member_ids'] as List<dynamic>?)
-          ?.map((e) => e.toString())
-          .toList() ??
-          [],
+      isInstitutional: json['is_institutional'] as bool? ?? false,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: json['updated_at'] != null
           ? DateTime.parse(json['updated_at'] as String)
@@ -78,14 +79,16 @@ class FamilyModel {
   // ========== CONVERSION VERS SUPABASE ====================
   // =========================================================
 
+  /// Sérialise pour INSERT/UPDATE sur la table `families`.
+  /// On n'écrit JAMAIS `member_count` ni `member_ids` :
+  ///   • member_count est calculé via v_families_enriched
+  ///   • le lien user→famille passe uniquement par la table family_members
   Map<String, dynamic> toJson() {
     return {
       'id': id,
       'church_id': churchId,
       'name': name,
       'responsible_id': responsibleId,
-      'member_count': memberCount,
-      'member_ids': memberIds,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
     };
@@ -106,7 +109,6 @@ class FamilyModel {
     String? name,
     String? responsibleId,
     int? memberCount,
-    List<String>? memberIds,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -116,7 +118,6 @@ class FamilyModel {
       name: name ?? this.name,
       responsibleId: responsibleId ?? this.responsibleId,
       memberCount: memberCount ?? this.memberCount,
-      memberIds: memberIds ?? this.memberIds,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -129,11 +130,6 @@ class FamilyModel {
   // Vérifie si un utilisateur est responsable
   bool isUserResponsible(String userId) {
     return responsibleId == userId;
-  }
-
-  // Vérifie si un utilisateur est membre
-  bool isUserMember(String userId) {
-    return memberIds.contains(userId);
   }
 
   @override

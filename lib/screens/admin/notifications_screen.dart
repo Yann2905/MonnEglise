@@ -9,12 +9,16 @@
  */
 
 import 'package:flutter/cupertino.dart';
+import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../models/absence_model.dart';
 import '../../models/notification_model.dart';
 import '../../models/family_model.dart';
+import '../../providers/auth_provider.dart';
 import '../../core/constants.dart';
 import '../../core/cupertino_theme.dart';
 import '../../core/helpers.dart';
+import 'absence_detail_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
   final String adminId;
@@ -33,11 +37,40 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   final _supabase = Supabase.instance.client;
   bool _loading = true;
   List<NotificationModel> _received = [];
+  RealtimeChannel? _channel;
 
   @override
   void initState() {
     super.initState();
     _loadReceived();
+    _subscribe();
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  void _subscribe() {
+    if (widget.adminId.isEmpty) return;
+    _channel?.unsubscribe();
+    _channel = _supabase
+        .channel('notifications_received_${widget.adminId}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'receiver_id',
+            value: widget.adminId,
+          ),
+          callback: (_) {
+            if (mounted) _loadReceived();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _loadReceived() async {
@@ -66,6 +99,32 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     }
   }
 
+  /// Gère le tap sur une notif — redirige selon son type/metadata
+  Future<void> _handleNotifTap(NotificationModel n) async {
+    // Type 'absence' → ouvre le détail de l'appel
+    if (n.isAbsenceNotification) {
+      final absenceId = n.metadata?['absence_id'] as String?;
+      if (absenceId == null) return;
+      try {
+        final data = await _supabase
+            .from('absences')
+            .select()
+            .eq('id', absenceId)
+            .maybeSingle();
+        if (data == null || !mounted) return;
+        final model = AbsenceModel.fromMap(Map<String, dynamic>.from(data));
+        Navigator.of(context, rootNavigator: true).push(
+          CupertinoPageRoute(
+            builder: (_) => AbsenceDetailScreen(absence: model),
+          ),
+        );
+      } catch (_) {
+        // notif corrompue ou absence supprimée → silencieux
+      }
+    }
+    // (autres types : 'sermon', 'system', 'custom' → pas de redirection)
+  }
+
   Future<void> _markAsRead(String id) async {
     try {
       await _supabase
@@ -79,8 +138,9 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     showCupertinoDialog(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Supprimer ?'),
-        content: const Text('Cette action est irréversible.'),
+        title: const Text('Supprimer cette notification ?'),
+        content: const Text(
+            'Voulez-vous vraiment supprimer cette notification ? Cette action est irréversible.'),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx),
@@ -115,6 +175,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
             largeTitle: const Text('Alertes'),
             backgroundColor:
                 IOSTheme.groupedBackground(context).withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
           ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
@@ -182,6 +243,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                   notif: n,
                   onTap: () {
                     if (!n.isRead) _markAsRead(n.id);
+                    _handleNotifTap(n);
                   },
                   onDelete: () => _delete(n.id),
                 ),
@@ -318,15 +380,20 @@ class _SendNotificationForm extends StatefulWidget {
 class _SendNotificationFormState extends State<_SendNotificationForm> {
   final _titleCtrl = TextEditingController();
   final _messageCtrl = TextEditingController();
-  String? _selectedRecipient; // null = "Tous", sinon family ID
+  bool _sendToAll = true; // par défaut : tous les membres
+  final Set<String> _selectedFamilyIds = {};
   bool _isSending = false;
   List<FamilyModel> _families = [];
   final _supabase = Supabase.instance.client;
 
+  String get _churchId =>
+      Provider.of<AuthProvider>(context, listen: false).currentUser?.churchId ??
+      '';
+
   @override
   void initState() {
     super.initState();
-    _loadFamilies();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadFamilies());
   }
 
   @override
@@ -337,11 +404,13 @@ class _SendNotificationFormState extends State<_SendNotificationForm> {
   }
 
   Future<void> _loadFamilies() async {
+    final churchId = _churchId;
+    if (churchId.isEmpty) return;
     try {
       final res = await _supabase
-          .from('families')
+          .from('v_families_enriched')
           .select()
-          .eq('church_id', widget.adminId)
+          .eq('church_id', churchId)
           .order('name');
       if (!mounted) return;
       setState(() {
@@ -360,41 +429,96 @@ class _SendNotificationFormState extends State<_SendNotificationForm> {
       _alert('Champs requis', 'Le titre et le message sont obligatoires.');
       return;
     }
+    if (!_sendToAll && _selectedFamilyIds.isEmpty) {
+      _alert('Destinataire requis',
+          'Sélectionnez "Tous les membres" ou au moins une famille.');
+      return;
+    }
+
+    final churchId = _churchId;
+    if (churchId.isEmpty) {
+      _alert('Erreur', 'Église introuvable.');
+      return;
+    }
+
     setState(() => _isSending = true);
     try {
-      List<String> memberIds = [];
-      if (_selectedRecipient == null) {
+      // Collecte des destinataires (avec dédup)
+      final Set<String> recipients = {};
+
+      if (_sendToAll) {
         final res = await _supabase
             .from('users')
             .select('id')
-            .eq('church_id', widget.adminId);
-        memberIds = (res as List).map((u) => u['id'] as String).toList();
+            .eq('church_id', churchId);
+        for (final u in (res as List)) {
+          recipients.add(u['id'] as String);
+        }
       } else {
+        // Pour chaque famille sélectionnée → membres via family_members
         final res = await _supabase
-            .from('families')
-            .select('member_ids')
-            .eq('id', _selectedRecipient!)
-            .single();
-        memberIds = List<String>.from(res['member_ids'] ?? []);
+            .from('family_members')
+            .select('user_id')
+            .inFilter('family_id', _selectedFamilyIds.toList());
+        for (final r in (res as List)) {
+          recipients.add(r['user_id'] as String);
+        }
       }
-      for (final id in memberIds) {
-        await _supabase.from('notifications').insert({
-          'title': title,
-          'message': message,
-          'type': AppConstants.notificationTypeCustom,
-          'sender_id': widget.adminId,
-          'receiver_id': id,
-          'is_read': false,
-        });
+
+      // On évite de s'envoyer à soi-même (admin expéditeur)
+      recipients.remove(widget.adminId);
+
+      if (recipients.isEmpty) {
+        _alert('Aucun destinataire',
+            'Les familles sélectionnées ne contiennent aucun membre.');
+        setState(() => _isSending = false);
+        return;
       }
+
+      // Insertion en bulk (1 row par destinataire) — pour la liste in-app
+      final rows = recipients
+          .map((id) => {
+                'title': title,
+                'message': message,
+                'type': AppConstants.notificationTypeCustom,
+                'sender_id': widget.adminId,
+                'receiver_id': id,
+                'is_read': false,
+              })
+          .toList();
+      await _supabase.from('notifications').insert(rows);
+
+      // Push FCM via Edge Function (best-effort, ne bloque pas l'UX si KO)
+      int pushSent = 0;
+      try {
+        final res = await _supabase.functions.invoke(
+          'send-push',
+          body: {
+            'title': title,
+            'message': message,
+            'user_ids': recipients.toList(),
+            'data': {'type': AppConstants.notificationTypeCustom},
+          },
+        );
+        if (res.data is Map && res.data['sent'] is int) {
+          pushSent = res.data['sent'] as int;
+        }
+      } catch (_) {
+        // Edge Function indisponible → on a quand même les notifs in-app
+      }
+
       if (!mounted) return;
       _titleCtrl.clear();
       _messageCtrl.clear();
-      setState(() => _selectedRecipient = null);
+      setState(() {
+        _sendToAll = true;
+        _selectedFamilyIds.clear();
+      });
       widget.onSent?.call();
       _alert(
         'Notification envoyée',
-        'Envoyée à ${memberIds.length} membre${memberIds.length > 1 ? 's' : ''}.',
+        'Envoyée à ${recipients.length} membre${recipients.length > 1 ? 's' : ''}'
+        '${pushSent > 0 ? ' (dont $pushSent en push)' : ''}.',
       );
     } catch (e) {
       _alert('Erreur', "Impossible d'envoyer : $e");
@@ -424,78 +548,150 @@ class _SendNotificationFormState extends State<_SendNotificationForm> {
     FocusScope.of(context).unfocus();
     showCupertinoModalPopup(
       context: context,
-      builder: (ctx) => Container(
-        height: MediaQuery.of(ctx).size.height * 0.5,
-        decoration: BoxDecoration(
-          color: IOSTheme.cardBackground(ctx),
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 8),
-                width: 36,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: IOSTheme.tertiaryLabel(ctx),
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
-                child: Row(
-                  children: [
-                    Text('Destinataire',
-                        style: IOSTheme.title2(ctx)
-                            .copyWith(fontSize: 20)),
-                    const Spacer(),
-                    CupertinoButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('OK'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          // ↻ Le picker manipule directement notre state via setState parent,
+          // mais on a aussi besoin de re-render le contenu de la sheet.
+          void toggleAll() {
+            setState(() {
+              _sendToAll = true;
+              _selectedFamilyIds.clear();
+            });
+            setLocal(() {});
+          }
+
+          void toggleFamily(String id) {
+            setState(() {
+              if (_selectedFamilyIds.contains(id)) {
+                _selectedFamilyIds.remove(id);
+                if (_selectedFamilyIds.isEmpty) _sendToAll = true;
+              } else {
+                _selectedFamilyIds.add(id);
+                _sendToAll = false;
+              }
+            });
+            setLocal(() {});
+          }
+
+          return Container(
+            height: MediaQuery.of(ctx).size.height * 0.6,
+            decoration: BoxDecoration(
+              color: IOSTheme.cardBackground(ctx),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(16)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    width: 36,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: IOSTheme.tertiaryLabel(ctx),
+                      borderRadius: BorderRadius.circular(3),
                     ),
-                  ],
-                ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+                    child: Row(
+                      children: [
+                        Text('Destinataires',
+                            style: IOSTheme.title2(ctx).copyWith(fontSize: 20)),
+                        const Spacer(),
+                        CupertinoButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        _recipientCheckItem(
+                          ctx,
+                          icon: CupertinoIcons.person_3_fill,
+                          label: 'Tous les membres',
+                          checked: _sendToAll,
+                          onTap: toggleAll,
+                        ),
+                        if (_families.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+                            child: Text(
+                              'FAMILLES',
+                              style: IOSTheme.sectionHeader(ctx).copyWith(
+                                fontSize: 12,
+                                letterSpacing: 0.6,
+                              ),
+                            ),
+                          ),
+                        ..._families.map((f) => _recipientCheckItem(
+                              ctx,
+                              icon: CupertinoIcons.group_solid,
+                              label: f.name,
+                              checked: _selectedFamilyIds.contains(f.id),
+                              onTap: () => toggleFamily(f.id),
+                            )),
+                        if (_families.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
+                            child: Text(
+                              "Aucune famille créée pour le moment.",
+                              style: IOSTheme.footnote(ctx),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        const SizedBox(height: 12),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              Expanded(
-                child: ListView(
-                  children: [
-                    _recipientItem(ctx, null, 'Tous les membres',
-                        CupertinoIcons.person_3_fill),
-                    ..._families.map((f) => _recipientItem(
-                        ctx, f.id, f.name, CupertinoIcons.group_solid)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
 
-  Widget _recipientItem(
-      BuildContext ctx, String? id, String label, IconData icon) {
-    final isSelected = _selectedRecipient == id;
+  Widget _recipientCheckItem(
+    BuildContext ctx, {
+    required IconData icon,
+    required String label,
+    required bool checked,
+    required VoidCallback onTap,
+  }) {
     final blue = IOSTheme.systemBlue(ctx);
     return CupertinoButton(
       padding: EdgeInsets.zero,
-      onPressed: () {
-        setState(() => _selectedRecipient = id);
-        Navigator.pop(ctx);
-      },
+      onPressed: onTap,
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(
           children: [
-            Icon(icon, color: blue, size: 22),
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: checked ? blue : CupertinoColors.transparent,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: checked ? blue : IOSTheme.tertiaryLabel(ctx),
+                  width: 1.5,
+                ),
+              ),
+              child: checked
+                  ? const Icon(CupertinoIcons.checkmark,
+                      size: 16, color: CupertinoColors.white)
+                  : null,
+            ),
             const SizedBox(width: 14),
+            Icon(icon, color: blue, size: 22),
+            const SizedBox(width: 12),
             Expanded(child: Text(label, style: IOSTheme.body(ctx))),
-            if (isSelected)
-              Icon(CupertinoIcons.checkmark, color: blue, size: 20),
           ],
         ),
       ),
@@ -505,18 +701,33 @@ class _SendNotificationFormState extends State<_SendNotificationForm> {
   @override
   Widget build(BuildContext context) {
     final blue = IOSTheme.systemBlue(context);
-    final recipientLabel = _selectedRecipient == null
-        ? 'Tous les membres'
-        : _families
-            .firstWhere((f) => f.id == _selectedRecipient,
-                orElse: () => FamilyModel(
-                      id: '',
-                      churchId: '',
-                      name: '—',
-                      responsibleId: '',
-                      createdAt: DateTime.now(),
-                    ))
-            .name;
+
+    String recipientLabel;
+    IconData recipientIcon;
+    if (_sendToAll) {
+      recipientLabel = 'Tous les membres';
+      recipientIcon = CupertinoIcons.person_3_fill;
+    } else if (_selectedFamilyIds.isEmpty) {
+      recipientLabel = 'Choisir des destinataires';
+      recipientIcon = CupertinoIcons.person_crop_circle_badge_plus;
+    } else if (_selectedFamilyIds.length == 1) {
+      final f = _families.firstWhere(
+        (f) => f.id == _selectedFamilyIds.first,
+        orElse: () => FamilyModel(
+          id: '',
+          churchId: '',
+          name: '—',
+          responsibleId: '',
+          createdAt: DateTime.now(),
+        ),
+      );
+      recipientLabel = f.name;
+      recipientIcon = CupertinoIcons.group_solid;
+    } else {
+      recipientLabel =
+          '${_selectedFamilyIds.length} familles sélectionnées';
+      recipientIcon = CupertinoIcons.group_solid;
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -576,9 +787,7 @@ class _SendNotificationFormState extends State<_SendNotificationForm> {
             child: Row(
               children: [
                 Icon(
-                  _selectedRecipient == null
-                      ? CupertinoIcons.person_3_fill
-                      : CupertinoIcons.group_solid,
+                  recipientIcon,
                   size: 18,
                   color: IOSTheme.tertiaryLabel(context),
                 ),

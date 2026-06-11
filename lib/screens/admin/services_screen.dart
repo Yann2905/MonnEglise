@@ -16,7 +16,11 @@ import '../../models/service_model.dart';
 import '../../providers/auth_provider.dart';
 
 class ServicesScreen extends StatefulWidget {
-  const ServicesScreen({super.key});
+  /// Si true → mode lecture seule (pas de bouton +, pas d'action long-press).
+  /// Utilisé côté membre pour consulter les programmes du pasteur.
+  final bool readOnly;
+
+  const ServicesScreen({super.key, this.readOnly = false});
 
   @override
   State<ServicesScreen> createState() => _ServicesScreenState();
@@ -108,12 +112,176 @@ class _ServicesScreenState extends State<ServicesScreen> {
     );
   }
 
+  /// Ouvre une bottom-sheet avec le détail du culte/programme.
+  /// Visible par admin ET membre (lecture seule).
+  void _showServiceDetail(ServiceModel s) {
+    showCupertinoModalPopup(
+      context: context,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(ctx).size.height * 0.8,
+        ),
+        decoration: BoxDecoration(
+          color: IOSTheme.cardBackground(ctx),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Drag handle
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 36,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: IOSTheme.tertiaryLabel(ctx),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              // En-tête (icône + titre)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
+                child: Row(
+                  children: [
+                    _typeIcon(s.type, s.date.isAfter(DateTime.now())),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        s.displayTitle,
+                        style: IOSTheme.title2(ctx)
+                            .copyWith(fontWeight: FontWeight.w700),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(36, 36),
+                      onPressed: () => Navigator.pop(ctx),
+                      child: Icon(
+                        CupertinoIcons.xmark_circle_fill,
+                        color: IOSTheme.tertiaryLabel(ctx),
+                        size: 26,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Type
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                child: Row(
+                  children: [
+                    Icon(CupertinoIcons.tag,
+                        size: 14, color: IOSTheme.tertiaryLabel(ctx)),
+                    const SizedBox(width: 6),
+                    Text(s.typeLabel, style: IOSTheme.footnote(ctx)),
+                  ],
+                ),
+              ),
+              Container(
+                height: 0.5,
+                color: IOSTheme.separator(ctx),
+              ),
+              // Date + heure
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: IOSTheme.systemBlue(ctx)
+                            .withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(CupertinoIcons.calendar,
+                          color: IOSTheme.systemBlue(ctx), size: 22),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_formatDate(s.date),
+                              style: IOSTheme.body(ctx).copyWith(
+                                  fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 2),
+                          Text(
+                            s.date.isAfter(DateTime.now())
+                                ? 'À venir'
+                                : 'Passé',
+                            style: IOSTheme.footnote(ctx).copyWith(
+                              color: s.date.isAfter(DateTime.now())
+                                  ? IOSTheme.systemBlue(ctx)
+                                  : IOSTheme.tertiaryLabel(ctx),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Actions admin (uniquement si pas readOnly)
+              if (!widget.readOnly) ...[
+                Container(height: 0.5, color: IOSTheme.separator(ctx)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: CupertinoButton(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _openCreateOrEdit(existing: s);
+                        },
+                        child: const Text('Modifier'),
+                      ),
+                    ),
+                    Container(
+                      width: 0.5,
+                      height: 30,
+                      color: IOSTheme.separator(ctx),
+                    ),
+                    Expanded(
+                      child: CupertinoButton(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _confirmDelete(s);
+                        },
+                        child: Text(
+                          'Supprimer',
+                          style: TextStyle(
+                            inherit: false,
+                            fontFamily: IOSTheme.fontFamily,
+                            color: IOSTheme.systemRed(ctx),
+                            fontSize: 17,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _confirmDelete(ServiceModel s) {
     showCupertinoDialog(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Supprimer ce culte ?'),
-        content: const Text('Cette action est irréversible.'),
+        title: Text('Supprimer "${s.displayTitle}" ?'),
+        content: const Text(
+            'Voulez-vous vraiment supprimer ce programme ? Cette action est irréversible.'),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx),
@@ -147,7 +315,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
     return CupertinoPageScaffold(
       backgroundColor: IOSTheme.groupedBackground(context),
       navigationBar: CupertinoNavigationBar(
-        middle: Text('Cultes & événements',
+        middle: Text(widget.readOnly ? 'Programmes' : 'Cultes & événements',
             style: TextStyle(
               inherit: false,
               fontFamily: IOSTheme.fontFamily,
@@ -157,12 +325,15 @@ class _ServicesScreenState extends State<ServicesScreen> {
             )),
         backgroundColor:
             IOSTheme.groupedBackground(context).withValues(alpha: 0.9),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _openCreateOrEdit,
-          child: Icon(CupertinoIcons.add_circled_solid,
-              size: 28, color: blue),
-        ),
+        // Bouton "+" caché en lecture seule (côté membre)
+        trailing: widget.readOnly
+            ? null
+            : CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: _openCreateOrEdit,
+                child: Icon(CupertinoIcons.add_circled_solid,
+                    size: 28, color: blue),
+              ),
       ),
       child: SafeArea(
         child: _loading
@@ -209,10 +380,10 @@ class _ServicesScreenState extends State<ServicesScreen> {
           return Column(
             children: [
               GestureDetector(
-                onLongPress: () => _showActions(s),
+                onLongPress: widget.readOnly ? null : () => _showActions(s),
                 child: CupertinoButton(
                   padding: EdgeInsets.zero,
-                  onPressed: () => _showActions(s),
+                  onPressed: () => _showServiceDetail(s),
                   child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 14, vertical: 12),

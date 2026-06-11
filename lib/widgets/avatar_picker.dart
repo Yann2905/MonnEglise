@@ -36,8 +36,12 @@ class AvatarPicker extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () async {
-        final picked = await AvatarService.pickFromActionSheet(context);
-        if (picked != null) onPicked(picked);
+        // Pendant l'inscription, pas d'avatar existant → on n'affiche pas
+        // l'option Supprimer.
+        final result = await AvatarService.pickFromActionSheet(context);
+        if (result?.action == AvatarPickAction.pick && result?.file != null) {
+          onPicked(result!.file!);
+        }
       },
       child: Stack(
         children: [

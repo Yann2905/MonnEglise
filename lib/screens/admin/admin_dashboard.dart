@@ -23,6 +23,7 @@ import '../../models/sermon_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/database_service.dart';
 import '../../widgets/app_bottom_nav.dart';
+import '../../widgets/exit_on_back_scope.dart';
 import '../../widgets/sermon_audio_hero.dart';
 import '../../widgets/user_avatar.dart';
 import '../shared/sermon_form_screen.dart';
@@ -55,11 +56,73 @@ class _AdminDashboardState extends State<AdminDashboard> {
   List<FamilyModel> _families = [];
 
   int _currentIndex = 0;
+  RealtimeChannel? _notifChannel;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadAll();
+      _subscribeRealtime();
+    });
+  }
+
+  @override
+  void dispose() {
+    _notifChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  /// S'abonne aux changements en temps réel sur les notifications + sermons
+  /// pour le user courant. À chaque INSERT, on rafraîchit le dashboard.
+  void _subscribeRealtime() {
+    final user =
+        Provider.of<AuthProvider>(context, listen: false).currentUser;
+    if (user == null) return;
+
+    _notifChannel?.unsubscribe();
+    _notifChannel = _supabase
+        .channel('admin_dashboard_${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'receiver_id',
+            value: user.id,
+          ),
+          callback: (_) {
+            if (mounted) _loadAll();
+          },
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'receiver_id',
+            value: user.id,
+          ),
+          callback: (_) {
+            if (mounted) _loadAll();
+          },
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'sermons',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'church_id',
+            value: user.churchId,
+          ),
+          callback: (_) {
+            if (mounted) _loadAll();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _loadAll() async {
@@ -76,8 +139,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
           user.churchId.isNotEmpty ? user.churchId : id;
 
       final res = await Future.wait([
-        _db.countMembers(id).catchError((_) => 0),
-        _db.countFamilies(id).catchError((_) => 0),
+        _db.countMembers(churchId).catchError((_) => 0),
+        _db.countFamilies(churchId).catchError((_) => 0),
         _countAbsencesThisWeek().catchError((_) => 0),
         _db.countUnreadNotifications(id).catchError((_) => 0),
       ]);
@@ -114,9 +177,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
       List<FamilyModel> fams = [];
       try {
         final f = await _supabase
-            .from('families')
+            .from('v_families_enriched')
             .select()
             .eq('church_id', churchId)
+            .order('is_institutional', ascending: false)
             .order('name')
             .limit(3);
         fams = (f as List)
@@ -157,7 +221,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   Widget build(BuildContext context) {
     final adminId =
         Provider.of<AuthProvider>(context, listen: false).currentUser?.id ?? '';
-    return CupertinoPageScaffold(
+    return ExitOnBackScope(
+      child: CupertinoPageScaffold(
       backgroundColor: IOSTheme.groupedBackground(context),
       child: SafeArea(
         top: false,
@@ -212,6 +277,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

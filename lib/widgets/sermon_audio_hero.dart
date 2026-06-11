@@ -38,10 +38,18 @@ class SermonAudioHero extends StatelessWidget {
   Future<void> _download() async {
     final url = sermon.audioUrl;
     if (url == null) return;
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    if (await canLaunchUrl(uri)) {
+    final base = Uri.tryParse(url);
+    if (base == null) return;
+    final uri = base.replace(
+      queryParameters: {
+        ...base.queryParameters,
+        'download': 'true',
+      },
+    );
+    try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      // silencieux — le widget n'a pas accès à un Scaffold pour montrer un toast
     }
   }
 

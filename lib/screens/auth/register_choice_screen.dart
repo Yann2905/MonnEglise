@@ -117,7 +117,7 @@ class RegisterChoiceScreen extends StatelessWidget {
                     accent: IOSTheme.systemGreen(context), // sauge
                     bgAlpha: isDark ? 0.20 : 0.13,
                     onTap: () =>
-                        Navigator.pushNamed(context, '/register-member'),
+                        Navigator.pushNamed(context, '/church-code'),
                   )
                       .animate(delay: 320.ms)
                       .fadeIn(duration: 400.ms)

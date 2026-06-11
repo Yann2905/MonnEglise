@@ -92,13 +92,12 @@ class _RegisterAdminScreenState extends State<RegisterAdminScreen> {
     auth.setPendingAvatar(_avatarFile);
 
     try {
-      final result = await auth.registerAdmin(data);
+      // Mode sans OTP : inscription directe
+      final memberCode = await auth.registerAdminDirect(data: data);
       if (!mounted) return;
 
-      if (result == 'OTP_SENT') {
-        _showOtpSheet(data);
-      } else if (result != null) {
-        _showSuccessDialog(result);
+      if (memberCode != null) {
+        _showSuccessDialog(memberCode);
       } else {
         _showAlert('Erreur',
             auth.errorMessage ?? 'Impossible de créer le compte');

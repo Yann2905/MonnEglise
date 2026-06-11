@@ -26,10 +26,12 @@ import '../../models/service_model.dart';
 import '../../models/sermon_model.dart';
 import '../../services/avatar_service.dart';
 import '../../widgets/app_bottom_nav.dart';
+import '../../widgets/exit_on_back_scope.dart';
 import '../../widgets/sermon_audio_hero.dart';
 import '../../widgets/user_avatar.dart';
 import '../admin/families_screen.dart' show FamilyDetailScreen;
 import '../auth/change_phone_screen.dart';
+import '../admin/services_screen.dart';
 import '../shared/sermons_screen.dart';
 
 class MemberDashboard extends StatefulWidget {
@@ -49,6 +51,8 @@ class _MemberDashboardState extends State<MemberDashboard> {
   List<FamilyModel> _myFamilies = [];
   int _unreadNotifications = 0;
 
+  RealtimeChannel? _realtimeChannel;
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +62,53 @@ class _MemberDashboardState extends State<MemberDashboard> {
       _loadLatestSermon();
       _loadMyFamilies();
       _listenToUnreadNotifications();
+      _subscribeRealtime();
     });
+  }
+
+  @override
+  void dispose() {
+    _realtimeChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  /// Abonnement Realtime sur les sermons + services de mon église.
+  /// Quand l'admin ajoute une prédication, le tableau de bord se rafraîchit.
+  void _subscribeRealtime() {
+    final user =
+        Provider.of<AuthProvider>(context, listen: false).currentUser;
+    if (user == null || user.churchId.isEmpty) return;
+
+    _realtimeChannel?.unsubscribe();
+    _realtimeChannel = _supabase
+        .channel('member_dashboard_${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'sermons',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'church_id',
+            value: user.churchId,
+          ),
+          callback: (_) {
+            if (mounted) _loadLatestSermon();
+          },
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'services',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'church_id',
+            value: user.churchId,
+          ),
+          callback: (_) {
+            if (mounted) _loadNextService();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _loadMyFamilies() async {
@@ -76,8 +126,10 @@ class _MemberDashboardState extends State<MemberDashboard> {
         if (mounted) setState(() => _myFamilies = []);
         return;
       }
-      final data =
-          await _supabase.from('families').select().inFilter('id', ids);
+      final data = await _supabase
+          .from('v_families_enriched')
+          .select()
+          .inFilter('id', ids);
       if (!mounted) return;
       setState(() {
         _myFamilies = (data as List)
@@ -162,7 +214,8 @@ class _MemberDashboardState extends State<MemberDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    return CupertinoPageScaffold(
+    return ExitOnBackScope(
+      child: CupertinoPageScaffold(
       backgroundColor: IOSTheme.groupedBackground(context),
       child: SafeArea(
         top: false,
@@ -208,6 +261,7 @@ class _MemberDashboardState extends State<MemberDashboard> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -371,7 +425,11 @@ class _HomeTab extends StatelessWidget {
             ? '${nextService!.date.day}/${nextService!.date.month}'
             : '—',
         sub: nextService != null ? nextService!.typeLabel : 'À venir',
-        onTap: () {},
+        onTap: () => Navigator.of(context, rootNavigator: true).push(
+          CupertinoPageRoute(
+            builder: (_) => const ServicesScreen(readOnly: true),
+          ),
+        ),
         delayMs: 160,
       ),
       _MemberPastelCard(
@@ -849,7 +907,7 @@ class _FamiliesTabState extends State<_FamiliesTab> {
       }
 
       final data = await _supabase
-          .from('families')
+          .from('v_families_enriched')
           .select()
           .inFilter('id', familyIds);
       if (!mounted) return;
@@ -877,6 +935,7 @@ class _FamiliesTabState extends State<_FamiliesTab> {
             largeTitle: const Text('Familles'),
             backgroundColor: IOSTheme.groupedBackground(context)
                 .withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
           ),
           CupertinoSliverRefreshControl(onRefresh: _load),
           if (_loading)
@@ -1000,11 +1059,44 @@ class _MessagesTabState extends State<_MessagesTab> {
   final _supabase = Supabase.instance.client;
   bool _loading = true;
   List<NotificationModel> _notifs = [];
+  RealtimeChannel? _channel;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load();
+      _subscribe();
+    });
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  void _subscribe() {
+    final uid =
+        Provider.of<AuthProvider>(context, listen: false).currentUser?.id;
+    if (uid == null) return;
+    _channel?.unsubscribe();
+    _channel = _supabase
+        .channel('member_messages_$uid')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'receiver_id',
+            value: uid,
+          ),
+          callback: (_) {
+            if (mounted) _load();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _load() async {
@@ -1058,6 +1150,7 @@ class _MessagesTabState extends State<_MessagesTab> {
             largeTitle: const Text('Messages'),
             backgroundColor: IOSTheme.groupedBackground(context)
                 .withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
           ),
           CupertinoSliverRefreshControl(onRefresh: _load),
           if (_loading)
@@ -1085,7 +1178,10 @@ class _MessagesTabState extends State<_MessagesTab> {
                       padding: const EdgeInsets.only(bottom: 10),
                       child: _NotifCard(
                         notif: n,
-                        onTap: () => _markAsRead(n.id),
+                        onTap: () {
+                          _markAsRead(n.id);
+                          _showNotifDetail(context, n);
+                        },
                       ),
                     );
                   },
@@ -1095,6 +1191,14 @@ class _MessagesTabState extends State<_MessagesTab> {
             ),
         ],
       ),
+    );
+  }
+
+  /// Ouvre le détail d'une notif en bottom sheet (style iOS)
+  void _showNotifDetail(BuildContext context, NotificationModel notif) {
+    showCupertinoModalPopup(
+      context: context,
+      builder: (ctx) => _NotifDetailSheet(notif: notif),
     );
   }
 }
@@ -1164,15 +1268,139 @@ class _NotifCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                Text(notif.message, style: IOSTheme.footnote(context)),
+                Text(
+                  notif.message,
+                  style: IOSTheme.footnote(context),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 const SizedBox(height: 6),
-                Text(Helpers.formatDateShort(notif.createdAt),
+                Text(Helpers.formatDateTimeFull(notif.createdAt),
                     style: IOSTheme.caption(context)),
               ],
             ),
           ),
         ],
       ),
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════
+//  DÉTAIL D'UNE NOTIF — bottom sheet iOS
+// ══════════════════════════════════════════════
+class _NotifDetailSheet extends StatelessWidget {
+  final NotificationModel notif;
+  const _NotifDetailSheet({required this.notif});
+
+  @override
+  Widget build(BuildContext context) {
+    final blue = IOSTheme.systemBlue(context);
+    final accent = notif.isAbsenceNotification
+        ? IOSTheme.systemOrangeLight
+        : blue;
+
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
+      decoration: BoxDecoration(
+        color: IOSTheme.cardBackground(context),
+        borderRadius:
+            const BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle iOS
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              width: 36,
+              height: 5,
+              decoration: BoxDecoration(
+                color: IOSTheme.tertiaryLabel(context),
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            // En-tête
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: accent.withValues(
+                          alpha: IOSTheme.isDark(context) ? 0.20 : 0.12),
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Icon(
+                      notif.isAbsenceNotification
+                          ? CupertinoIcons.calendar_badge_minus
+                          : CupertinoIcons.bell_fill,
+                      size: 20,
+                      color: accent,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      notif.title,
+                      style: IOSTheme.title2(context)
+                          .copyWith(fontWeight: FontWeight.w700),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(36, 36),
+                    onPressed: () => Navigator.pop(context),
+                    child: Icon(
+                      CupertinoIcons.xmark_circle_fill,
+                      color: IOSTheme.tertiaryLabel(context),
+                      size: 26,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Date complète
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Row(
+                children: [
+                  Icon(CupertinoIcons.time,
+                      size: 14,
+                      color: IOSTheme.tertiaryLabel(context)),
+                  const SizedBox(width: 6),
+                  Text(
+                    Helpers.formatDateTimeFull(notif.createdAt),
+                    style: IOSTheme.caption(context),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              height: 0.5,
+              color: IOSTheme.separator(context),
+            ),
+            // Message complet (scrollable si long)
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: Text(
+                  notif.message,
+                  style: IOSTheme.body(context).copyWith(height: 1.4),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1204,6 +1432,7 @@ class _ProfileTab extends StatelessWidget {
                 largeTitle: const Text('Profil'),
                 backgroundColor: IOSTheme.groupedBackground(context)
                     .withValues(alpha: 0.85),
+                transitionBetweenRoutes: false,
               ),
               SliverToBoxAdapter(
                 child: Padding(
@@ -1369,11 +1598,54 @@ class _ProfileTab extends StatelessWidget {
   Future<void> _changeAvatar(BuildContext context, AuthProvider auth) async {
     final user = auth.currentUser;
     if (user == null) return;
-    final file = await AvatarService.pickFromActionSheet(context);
-    if (file == null) return;
-    final url =
-        await AvatarService.uploadAndSave(userId: user.id, xfile: file);
+    final hasExisting = user.avatarUrl != null && user.avatarUrl!.isNotEmpty;
+
+    final choice = await AvatarService.pickFromActionSheet(
+      context,
+      hasExisting: hasExisting,
+    );
+    if (choice == null) return;
+
+    if (choice.action == AvatarPickAction.delete) {
+      final confirmed = await showCupertinoDialog<bool>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: const Text('Supprimer la photo ?'),
+          content: const Text(
+              'Voulez-vous vraiment supprimer votre photo de profil ? Les initiales seront affichées à la place.'),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Annuler'),
+            ),
+            CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Supprimer'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+
+      final ok = await AvatarService.deleteAvatar(
+        userId: user.id,
+        publicId: user.avatarPublicId,
+      );
+      if (ok) {
+        auth.updateLocalAvatarUrl('');
+        await auth.refreshUser();
+      }
+      return;
+    }
+
+    final url = await AvatarService.uploadAndSave(
+      userId: user.id,
+      xfile: choice.file!,
+      oldPublicId: user.avatarPublicId,
+    );
     if (url != null) {
+      auth.updateLocalAvatarUrl(url);
       await auth.refreshUser();
     }
   }
@@ -1394,7 +1666,7 @@ class _ProfileTab extends StatelessWidget {
             isDestructiveAction: true,
             onPressed: () async {
               Navigator.pop(ctx);
-              await auth.logout();
+              await auth.logoutDirect();
               if (context.mounted) {
                 Navigator.of(context, rootNavigator: true)
                     .pushNamedAndRemoveUntil('/login', (_) => false);

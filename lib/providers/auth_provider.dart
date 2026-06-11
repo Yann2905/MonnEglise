@@ -7,11 +7,15 @@
  * Utilise ChangeNotifier pour notifier les widgets des changements
  */
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/user_model.dart';
 import '../services/avatar_service.dart';
+import '../services/push_notifications_service.dart';
 import '../supabase_config.dart';
 
 class AuthProvider with ChangeNotifier {
@@ -62,16 +66,15 @@ class AuthProvider with ChangeNotifier {
   // ========== CONSTRUCTEUR ==========
 
   AuthProvider() {
-    // Écouter les changements d'authentification
-    SupabaseConfig.auth.onAuthStateChange.listen((data) {
-      final session = data.session;
-      if (session != null) {
-        _loadUserData(session.user.id);
-      } else {
-        _currentUser = null;
-        notifyListeners();
-      }
-    });
+    // Mode auth direct (sans Supabase Auth) :
+    // On n'utilise plus le listener onAuthStateChange parce qu'il null-erait
+    // _currentUser à chaque évènement (puisqu'il n'y a JAMAIS de session
+    // Supabase Auth — on gère tout dans la table `users` directement).
+    //
+    // Si tu réactives un jour Supabase Auth (OTP réel par exemple), ré-active
+    // le listener ci-dessous mais en filtrant sur SignedIn / SignedOut events.
+    //
+    // SupabaseConfig.auth.onAuthStateChange.listen((data) { ... });
   }
 
   // ========== INITIALISATION ==========
@@ -184,6 +187,11 @@ class AuthProvider with ChangeNotifier {
         await _loadUserData(response.user!.id);
 
         _pendingPhone = null;
+        if (_currentUser != null) {
+          // Enregistre le token FCM pour ce user (best-effort)
+          unawaited(PushNotificationsService.registerTokenForUser(
+              _currentUser!.id));
+        }
         return true;
       }
 
@@ -451,6 +459,8 @@ class AuthProvider with ChangeNotifier {
       final lastName = data['lastName']!;
       final quartier = data['quartier'] ?? '';
       final role = data['role'];
+      final churchRole = data['churchRole'] ?? 'fidele';
+      final gender = data['gender'];
       final familyIdsRaw = data['familyIds'] ?? '';
       final familyIds = familyIdsRaw.isEmpty
           ? <String>[]
@@ -477,13 +487,41 @@ class AuthProvider with ChangeNotifier {
         'quartier':    quartier,
         'role_global': 'membre',
         'role':        role,
+        'church_role': churchRole,
+        if (gender != null) 'gender': gender,
         'church_id':   churchId,
         'admin_code':  memberCode,
-        'family_ids':  familyIds,
+        // family_ids n'est PLUS écrit — voir table family_members
         if (birthDate != null && birthDate.isNotEmpty) 'birth_date': birthDate,
         'created_at':  DateTime.now().toIso8601String(),
         'updated_at':  DateTime.now().toIso8601String(),
       }).select('id').single();
+
+      // ⚡ Le trigger sync_church_role ajoutera automatiquement ce user au
+      // Comité des responsables si son church_role est ≠ 'fidele'.
+
+      // Pour les "responsable_famille", on les marque comme responsable de
+      // la famille sélectionnée (qui devient leur "famille principale").
+      if (churchRole == 'responsable_famille' && familyIds.isNotEmpty) {
+        try {
+          await SupabaseConfig.client
+              .from('families')
+              .update({'responsible_id': inserted['id']})
+              .eq('id', familyIds.first);
+        } catch (e) {
+          print('⚠️ Impossible de marquer responsable_id: $e');
+        }
+      }
+
+      // Liaison user ↔ familles via la table de jointure (source de vérité)
+      if (familyIds.isNotEmpty) {
+        await SupabaseConfig.client.from('family_members').insert(
+              familyIds
+                  .map((fid) =>
+                      {'family_id': fid, 'user_id': inserted['id']})
+                  .toList(),
+            );
+      }
 
       // 3.b. Upload avatar si fourni (compatible Web + mobile)
       if (_pendingAvatar != null) {
@@ -567,6 +605,9 @@ class AuthProvider with ChangeNotifier {
 
     try {
       print('🔵 AuthProvider: Déconnexion...');
+      if (_currentUser != null) {
+        await PushNotificationsService.unregisterTokenForUser(_currentUser!.id);
+      }
       await SupabaseConfig.auth.signOut();
       _currentUser = null;
       _pendingPhone = null;
@@ -640,9 +681,34 @@ class AuthProvider with ChangeNotifier {
 
   /// Recharge les données du user courant depuis la DB.
   /// Utile après un changement de profil (avatar, etc.).
+  /// Lit par `id` (toujours présent) plutôt que `auth_id` (null en mode DEV bypass).
+  /// Si la row n'existe pas en DB, on garde le _currentUser local mais on signale.
   Future<void> refreshUser() async {
     if (_currentUser == null) return;
-    await _loadUserData(_currentUser!.authId);
+    try {
+      final data = await SupabaseConfig.client
+          .from('users')
+          .select()
+          .eq('id', _currentUser!.id)
+          .maybeSingle();
+      if (data != null) {
+        _currentUser = UserModel.fromSupabase(data);
+      }
+      notifyListeners();
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ refreshUser: $e');
+      // On ne rethrow pas — au pire on garde le _currentUser local
+      notifyListeners();
+    }
+  }
+
+  /// Met à jour uniquement l'URL avatar dans le user en mémoire (sans appel DB).
+  /// Utile pour rafraîchir l'UI après un upload réussi.
+  void updateLocalAvatarUrl(String url) {
+    if (_currentUser == null) return;
+    _currentUser = _currentUser!.copyWith(avatarUrl: url);
+    notifyListeners();
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -728,117 +794,320 @@ class AuthProvider with ChangeNotifier {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  //  BYPASS DEV — preview style sans authentification
-  //  ⚠️ À retirer avant production
+  //  AUTH DIRECTE — SANS OTP SMS (mode communauté privée / APK uniquement)
   // ══════════════════════════════════════════════════════════════════════
+  //
+  // Important : on shortcut Supabase Auth (auth.users). Tous les inserts dans
+  // public.users ont auth_id = NULL. La persistance entre 2 lancements de
+  // l'app passe par SharedPreferences (clé `current_user_id`).
+  //
+  // Cette section remplace verifyOTP / finalize*Registration pour les flows
+  // qui veulent éviter le SMS.
 
-  // UUIDs constants utilisés par le bypass — partagés entre admin et membre
-  // pour qu'ils appartiennent à la même fausse église.
-  static const _demoAdminId   = '00000000-0000-0000-0000-000000000001';
-  static const _demoMemberId  = '00000000-0000-0000-0000-000000000002';
-  static const _demoChurchId  = '00000000-0000-0000-0000-0000000000aa';
+  static const String _prefsCurrentUserKey = 'mon_eglise_current_user_id';
 
-  /// Crée en base les fausses données démo (admin + église), en respectant
-  /// les FK : 1. user sans church_id → 2. church → 3. update user.church_id.
-  ///
-  /// ⚠️ Nécessite que `migration_dev_nullable_auth.sql` ait été exécutée
-  /// (rend users.auth_id nullable) — sinon l'insert plante car le UUID
-  /// `_demoAdminId` n'existe pas dans auth.users.
-  Future<void> _seedDemoChurch() async {
-    final client = SupabaseConfig.client;
-
-    // 1. Admin sans church_id ni auth_id (NULL pour ne pas violer la FK auth.users)
-    await client.from('users').upsert({
-      'id':             _demoAdminId,
-      'auth_id':        null, // NULL en bypass dev
-      'role_global':    'admin',
-      'phone':          '+2250000000001',
-      'first_name':     'Demo',
-      'last_name':      'Admin',
-      'quartier':       'Cocody',
-      'member_code':    'DEMO01',
-      'is_responsible': true,
-      'family_ids':     <String>[],
-    });
-
-    // 2. Église — admin existe maintenant
-    await client.from('churches').upsert({
-      'id':          _demoChurchId,
-      'name':        'Église Démo',
-      'admin_id':    _demoAdminId,
-      'invite_code': 'DEMO01',
-    });
-
-    // 3. Lier l'admin à l'église
-    await client
-        .from('users')
-        .update({'church_id': _demoChurchId})
-        .eq('id', _demoAdminId);
+  /// Login par numéro de téléphone uniquement.
+  /// Retourne true si un user avec ce numéro existe et a été chargé.
+  Future<bool> loginByPhone(String phone) async {
+    _setLoading(true);
+    _clearError();
+    try {
+      final data = await SupabaseConfig.client
+          .from('users')
+          .select()
+          .eq('phone', phone)
+          .maybeSingle();
+      if (data == null) {
+        _setError('Numéro non reconnu. Inscrivez-vous d\'abord.');
+        return false;
+      }
+      _currentUser = UserModel.fromSupabase(Map<String, dynamic>.from(data));
+      await _persistCurrentUser();
+      notifyListeners();
+      unawaited(
+          PushNotificationsService.registerTokenForUser(_currentUser!.id));
+      _subscribeToCurrentUser();
+      return true;
+    } catch (e) {
+      _setError('Erreur de connexion : $e');
+      return false;
+    } finally {
+      _setLoading(false);
+    }
   }
 
-  Future<void> loadDemoAdmin() async {
+  /// Inscription directe d'un membre (sans OTP).
+  /// `data` doit contenir : firstName, lastName, phone, quartier, churchRole,
+  ///   gender, familyIds (CSV), birthDate (optionnel).
+  /// `memberCode` = code de l'admin de l'église.
+  Future<bool> registerMemberDirect({
+    required String memberCode,
+    required Map<String, String> data,
+  }) async {
+    _setLoading(true);
+    _clearError();
     try {
-      await _seedDemoChurch();
-    } catch (e) {
-      print('⚠️ Bypass DEV admin — seed: $e');
-    }
+      // 1. Vérifie que le numéro n'est pas déjà pris
+      final phone = data['phone']!;
+      final dup = await SupabaseConfig.client
+          .from('users')
+          .select('id')
+          .eq('phone', phone)
+          .maybeSingle();
+      if (dup != null) {
+        _setError('Ce numéro est déjà enregistré.');
+        return false;
+      }
 
-    _currentUser = UserModel(
-      id:            _demoAdminId,
-      authId:        _demoAdminId,
-      churchId:      _demoChurchId,
-      roleGlobal:    'admin',
-      phone:         '+2250000000001',
-      firstName:     'Demo',
-      lastName:      'Admin',
-      quartier:      'Cocody',
-      memberCode:    'DEMO01',
-      isResponsible: true,
-      familyIds:     const [],
-      createdAt:     DateTime.now(),
-      updatedAt:     DateTime.now(),
-    );
-    notifyListeners();
+      // 2. Récupère church_id depuis le code admin
+      final adminLookup = await SupabaseConfig.client
+          .from('users')
+          .select('id, church_id')
+          .eq('member_code', memberCode.toUpperCase())
+          .eq('role_global', 'admin')
+          .single();
+      final churchId = adminLookup['church_id'] as String?;
+      if (churchId == null) {
+        _setError("Église introuvable pour ce code.");
+        return false;
+      }
+
+      final churchRole = data['churchRole'] ?? 'fidele';
+      final gender = data['gender'];
+      final familyIdsRaw = data['familyIds'] ?? '';
+      final familyIds = familyIdsRaw.isEmpty
+          ? <String>[]
+          : familyIdsRaw.split(',').where((s) => s.isNotEmpty).toList();
+      final birthDate = data['birthDate'];
+
+      // 3. INSERT direct dans users (auth_id = null)
+      final inserted = await SupabaseConfig.client.from('users').insert({
+        'auth_id':     null,
+        'phone':       phone,
+        'first_name':  data['firstName']!,
+        'last_name':   data['lastName']!,
+        'quartier':    data['quartier'] ?? '',
+        'role_global': 'membre',
+        'role':        data['role'] ?? churchRole,
+        'church_role': churchRole,
+        if (gender != null) 'gender': gender,
+        'church_id':   churchId,
+        'admin_code':  memberCode.toUpperCase(),
+        if (birthDate != null && birthDate.isNotEmpty) 'birth_date': birthDate,
+        'created_at':  DateTime.now().toIso8601String(),
+        'updated_at':  DateTime.now().toIso8601String(),
+      }).select().single();
+      final newUserId = inserted['id'] as String;
+
+      // 4. Liaison familles
+      if (familyIds.isNotEmpty) {
+        await SupabaseConfig.client.from('family_members').insert(
+              familyIds
+                  .map((fid) => {'family_id': fid, 'user_id': newUserId})
+                  .toList(),
+            );
+        // Si responsable_famille → marquer responsible_id sur la famille
+        if (churchRole == 'responsable_famille') {
+          try {
+            await SupabaseConfig.client
+                .from('families')
+                .update({'responsible_id': newUserId})
+                .eq('id', familyIds.first);
+          } catch (_) {}
+        }
+      }
+
+      // 5. Avatar si fourni
+      if (_pendingAvatar != null) {
+        try {
+          await AvatarService.uploadAndSave(
+            userId: newUserId,
+            xfile: _pendingAvatar!,
+          );
+        } catch (_) {}
+        _pendingAvatar = null;
+      }
+
+      // 6. Auto-login
+      _currentUser = UserModel.fromSupabase(Map<String, dynamic>.from(inserted));
+      await _persistCurrentUser();
+      notifyListeners();
+      unawaited(PushNotificationsService.registerTokenForUser(newUserId));
+      _subscribeToCurrentUser();
+      return true;
+    } catch (e) {
+      _setError("Inscription impossible : $e");
+      return false;
+    } finally {
+      _setLoading(false);
+    }
   }
 
-  Future<void> loadDemoMember() async {
+  /// Inscription directe d'un admin (sans OTP).
+  /// `data` doit contenir : firstName, lastName, phone, quartier,
+  ///   gender (optionnel), birthDate (optionnel).
+  /// Crée juste le user admin — l'église sera créée ensuite par
+  /// `ChurchSetupModal`. Retourne le member_code généré.
+  Future<String?> registerAdminDirect({
+    required Map<String, String> data,
+  }) async {
+    _setLoading(true);
+    _clearError();
     try {
-      // 1+2+3 : église + admin (cf. _seedDemoChurch)
-      await _seedDemoChurch();
+      final phone = data['phone']!;
+      // 1. Vérifie unicité
+      final dup = await SupabaseConfig.client
+          .from('users')
+          .select('id')
+          .eq('phone', phone)
+          .maybeSingle();
+      if (dup != null) {
+        _setError('Ce numéro est déjà enregistré.');
+        return null;
+      }
 
-      // 4. Insérer le faux membre lié à cette église (auth_id null en dev)
-      await SupabaseConfig.client.from('users').upsert({
-        'id':             _demoMemberId,
-        'auth_id':        null,
-        'church_id':      _demoChurchId,
-        'role_global':    'membre',
-        'phone':          '+2250000000002',
-        'first_name':     'Demo',
-        'last_name':      'Membre',
-        'quartier':       'Yopougon',
-        'admin_code':     'DEMO01',
-        'is_responsible': false,
-        'family_ids':     <String>[],
-      });
+      final memberCode = _generateMemberCode();
+      final gender = data['gender'];
+      final birthDate = data['birthDate'];
+
+      // 2. Insère le user admin (church_id sera défini par ChurchSetupModal)
+      final userInserted = await SupabaseConfig.client.from('users').insert({
+        'auth_id':       null,
+        'phone':         phone,
+        'first_name':    data['firstName']!,
+        'last_name':     data['lastName']!,
+        'quartier':      data['quartier'] ?? '',
+        'role_global':   'admin',
+        'church_role':   'pasteur_principal',
+        if (gender != null) 'gender': gender,
+        'member_code':   memberCode,
+        'is_responsible': true,
+        if (birthDate != null && birthDate.isNotEmpty) 'birth_date': birthDate,
+        'created_at':    DateTime.now().toIso8601String(),
+        'updated_at':    DateTime.now().toIso8601String(),
+      }).select().single();
+      final adminId = userInserted['id'] as String;
+
+      // 3. Avatar si fourni
+      if (_pendingAvatar != null) {
+        try {
+          await AvatarService.uploadAndSave(
+            userId: adminId,
+            xfile: _pendingAvatar!,
+          );
+        } catch (_) {}
+        _pendingAvatar = null;
+      }
+
+      // 4. Auto-login avec re-fetch pour avoir l'avatar
+      final finalRow = await SupabaseConfig.client
+          .from('users')
+          .select()
+          .eq('id', adminId)
+          .single();
+      _currentUser = UserModel.fromSupabase(Map<String, dynamic>.from(finalRow));
+      await _persistCurrentUser();
+      notifyListeners();
+      unawaited(PushNotificationsService.registerTokenForUser(adminId));
+      _subscribeToCurrentUser();
+      return memberCode;
     } catch (e) {
-      print('⚠️ Bypass DEV membre — seed: $e');
+      _setError("Inscription admin impossible : $e");
+      return null;
+    } finally {
+      _setLoading(false);
     }
+  }
 
-    _currentUser = UserModel(
-      id:            _demoMemberId,
-      authId:        _demoMemberId,
-      churchId:      _demoChurchId,
-      roleGlobal:    'membre',
-      phone:         '+2250000000002',
-      firstName:     'Demo',
-      lastName:      'Membre',
-      quartier:      'Yopougon',
-      adminCode:     'DEMO01',
-      isResponsible: false,
-      familyIds:     const [],
-      createdAt:     DateTime.now(),
-      updatedAt:     DateTime.now(),
-    );
+  /// Persiste l'ID du user courant en SharedPreferences pour auto-login.
+  Future<void> _persistCurrentUser() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_currentUser != null) {
+        await prefs.setString(_prefsCurrentUserKey, _currentUser!.id);
+      } else {
+        await prefs.remove(_prefsCurrentUserKey);
+      }
+    } catch (_) {}
+  }
+
+  /// Tente l'auto-login depuis l'ID stocké en SharedPreferences.
+  /// Retourne true si réussi.
+  Future<bool> tryAutoLogin() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = prefs.getString(_prefsCurrentUserKey);
+      if (id == null || id.isEmpty) return false;
+      final data = await SupabaseConfig.client
+          .from('users')
+          .select()
+          .eq('id', id)
+          .maybeSingle();
+      if (data == null) {
+        await prefs.remove(_prefsCurrentUserKey);
+        return false;
+      }
+      _currentUser = UserModel.fromSupabase(Map<String, dynamic>.from(data));
+      notifyListeners();
+      unawaited(PushNotificationsService.registerTokenForUser(id));
+      _subscribeToCurrentUser();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Channel Realtime pour suivre les changements du currentUser.
+  /// Utile quand l'admin change le rôle / avatar / etc. du user → l'app
+  /// du user concerné se met à jour automatiquement sans refresh manuel.
+  RealtimeChannel? _currentUserChannel;
+
+  void _subscribeToCurrentUser() {
+    final user = _currentUser;
+    if (user == null) return;
+    _currentUserChannel?.unsubscribe();
+    _currentUserChannel = SupabaseConfig.client
+        .channel('current_user_${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'users',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'id',
+            value: user.id,
+          ),
+          callback: (payload) async {
+            // Re-fetch le user complet (le payload n'a pas toutes les colonnes
+            // selon la config Realtime)
+            try {
+              final data = await SupabaseConfig.client
+                  .from('users')
+                  .select()
+                  .eq('id', user.id)
+                  .maybeSingle();
+              if (data != null) {
+                _currentUser =
+                    UserModel.fromSupabase(Map<String, dynamic>.from(data));
+                notifyListeners();
+              }
+            } catch (_) {}
+          },
+        )
+        .subscribe();
+  }
+
+  /// Logout simplifié (sans Supabase Auth).
+  Future<void> logoutDirect() async {
+    if (_currentUser != null) {
+      try {
+        await PushNotificationsService.unregisterTokenForUser(_currentUser!.id);
+      } catch (_) {}
+    }
+    _currentUserChannel?.unsubscribe();
+    _currentUserChannel = null;
+    _currentUser = null;
+    await _persistCurrentUser();
     notifyListeners();
   }
 

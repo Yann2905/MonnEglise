@@ -54,10 +54,56 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
   }
 
   Future<void> _download() async {
-    final uri = Uri.tryParse(widget.url);
-    if (uri == null) return;
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    // Ajoute ?download=true pour que Supabase Storage envoie le
+    // Content-Disposition: attachment → force le navigateur à télécharger
+    // au lieu de lire le MP3 en streaming.
+    final base = Uri.tryParse(widget.url);
+    if (base == null) return;
+    final uri = base.replace(
+      queryParameters: {
+        ...base.queryParameters,
+        'download': 'true',
+      },
+    );
+    try {
+      final ok = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && context.mounted) {
+        showCupertinoDialog(
+          context: context,
+          builder: (ctx) => CupertinoAlertDialog(
+            title: const Text('Téléchargement'),
+            content: Text(
+                "Aucune app n'a pu ouvrir le lien. URL : ${uri.toString()}"),
+            actions: [
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        showCupertinoDialog(
+          context: context,
+          builder: (ctx) => CupertinoAlertDialog(
+            title: const Text('Erreur téléchargement'),
+            content: Text('$e'),
+            actions: [
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
     }
   }
 

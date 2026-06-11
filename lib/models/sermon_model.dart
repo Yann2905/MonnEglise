@@ -11,6 +11,8 @@ class SermonModel {
   final String theme;
   final String? verses;
   final String? audioUrl;
+  /// public_id Cloudinary (nécessaire pour supprimer le fichier audio)
+  final String? audioPublicId;
   final int? durationSec;
   final DateTime sermonDate;
   final DateTime createdAt;
@@ -21,6 +23,7 @@ class SermonModel {
     required this.theme,
     this.verses,
     this.audioUrl,
+    this.audioPublicId,
     this.durationSec,
     required this.sermonDate,
     required this.createdAt,
@@ -33,6 +36,7 @@ class SermonModel {
       theme:       data['theme']?.toString() ?? '',
       verses:      data['verses']?.toString(),
       audioUrl:    data['audio_url']?.toString(),
+      audioPublicId: data['audio_public_id']?.toString(),
       durationSec: data['duration_sec'] as int?,
       sermonDate:  data['sermon_date'] != null
           ? DateTime.parse(data['sermon_date'] as String)
@@ -49,6 +53,7 @@ class SermonModel {
         'theme':        theme,
         'verses':       verses,
         'audio_url':    audioUrl,
+        'audio_public_id': audioPublicId,
         'duration_sec': durationSec,
         'sermon_date':  sermonDate.toIso8601String(),
         'created_at':   createdAt.toIso8601String(),

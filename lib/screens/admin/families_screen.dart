@@ -11,6 +11,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/constants.dart';
 import '../../core/cupertino_theme.dart';
 import '../../models/family_model.dart';
 import '../../models/user_model.dart';
@@ -28,8 +29,10 @@ class FamiliesScreen extends StatefulWidget {
 
 class _FamiliesScreenState extends State<FamiliesScreen> {
   final _db = DatabaseService();
+  final _supabase = Supabase.instance.client;
   bool _isLoading = true;
   List<FamilyModel> _families = [];
+  RealtimeChannel? _channel;
 
   /// Lit l'ID d'église à chaque appel (et non en cache) pour rester aligné
   /// avec le currentUser même après un re-seed ou un changement de session.
@@ -45,7 +48,49 @@ class _FamiliesScreenState extends State<FamiliesScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load();
+      _subscribe();
+    });
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  /// Realtime : reload à chaque modif de famille ou de family_members.
+  /// Pas de filtre church_id sur family_members (le payload n'a pas cette info),
+  /// donc on déclenche un reload conservateur.
+  void _subscribe() {
+    final churchId = _currentChurchId;
+    if (churchId == null || churchId.isEmpty) return;
+    _channel?.unsubscribe();
+    _channel = _supabase
+        .channel('admin_families_$churchId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'families',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'church_id',
+            value: churchId,
+          ),
+          callback: (_) {
+            if (mounted) _load();
+          },
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'family_members',
+          callback: (_) {
+            if (mounted) _load();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _load() async {
@@ -216,8 +261,9 @@ class _FamiliesScreenState extends State<FamiliesScreen> {
     showCupertinoDialog(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Supprimer cette famille ?'),
-        content: Text("« ${f.name} » sera supprimée définitivement."),
+        title: Text('Supprimer "${f.name}" ?'),
+        content: const Text(
+            'Voulez-vous vraiment supprimer cette famille ? Tous les membres en seront retirés. Cette action est irréversible.'),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx),
@@ -258,6 +304,7 @@ class _FamiliesScreenState extends State<FamiliesScreen> {
             largeTitle: const Text('Familles'),
             backgroundColor:
                 IOSTheme.groupedBackground(context).withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
             trailing: CupertinoButton(
               padding: EdgeInsets.zero,
               onPressed: _showCreateDialog,
@@ -336,8 +383,16 @@ class _FamilyRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final green = IOSTheme.systemGreen(context);
+    // Le Comité a un look spécial : étoile dorée + badge "Officiel"
+    final accent = family.isInstitutional
+        ? IOSTheme.systemOrangeLight
+        : green;
+    final icon = family.isInstitutional
+        ? CupertinoIcons.star_circle_fill
+        : CupertinoIcons.group_solid;
+
     return GestureDetector(
-      onLongPress: onLongPress,
+      onLongPress: family.isInstitutional ? null : onLongPress,
       child: CupertinoButton(
         padding: EdgeInsets.zero,
         onPressed: onTap,
@@ -349,21 +404,49 @@ class _FamilyRow extends StatelessWidget {
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
-                  color: green.withValues(
+                  color: accent.withValues(
                       alpha: IOSTheme.isDark(context) ? 0.20 : 0.12),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(CupertinoIcons.group_solid,
-                    size: 18, color: green),
+                child: Icon(icon, size: 18, color: accent),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(family.name,
-                        style: IOSTheme.body(context)
-                            .copyWith(fontWeight: FontWeight.w500)),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(family.name,
+                              style: IOSTheme.body(context)
+                                  .copyWith(fontWeight: FontWeight.w500),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        if (family.isInstitutional) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: accent.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              'Officiel',
+                              style: TextStyle(
+                                inherit: false,
+                                fontFamily: IOSTheme.fontFamily,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: accent,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                     const SizedBox(height: 1),
                     Text(
                       '${family.memberCount} membre${family.memberCount > 1 ? "s" : ""}',
@@ -444,12 +527,112 @@ class FamilyDetailScreenState extends State<FamilyDetailScreen> {
     }
   }
 
+  /// Action sheet quand l'admin tape sur un membre de la famille.
+  /// Propose : "Désigner comme responsable" (sauf si déjà) + "Retirer de la famille".
+  void _showMemberActions(UserModel u, bool isResp) {
+    showCupertinoModalPopup(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: Text(u.fullName),
+        message: Text(AppConstants.labelOfChurchRole(u.churchRole)),
+        actions: [
+          if (!isResp && !widget.family.isInstitutional)
+            CupertinoActionSheetAction(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _setAsResponsible(u);
+              },
+              child: const Text('Désigner comme responsable'),
+            ),
+          if (isResp && !widget.family.isInstitutional)
+            CupertinoActionSheetAction(
+              isDestructiveAction: true,
+              onPressed: () {
+                Navigator.pop(ctx);
+                _removeResponsibleStatus(u);
+              },
+              child: const Text('Retirer du poste de responsable'),
+            ),
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () {
+              Navigator.pop(ctx);
+              _removeMember(u);
+            },
+            child: const Text('Retirer de la famille'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          isDefaultAction: true,
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Annuler'),
+        ),
+      ),
+    );
+  }
+
+  /// Désigne `u` comme nouveau responsable de la famille.
+  /// Le trigger SQL `sync_responsible_change` s'occupera de :
+  ///   • Mettre church_role = responsable_famille pour u (donc l'ajouter au Comité)
+  ///   • Démoter l'ancien responsable s'il n'est plus respo nulle part ailleurs
+  Future<void> _setAsResponsible(UserModel u) async {
+    try {
+      await Supabase.instance.client
+          .from('families')
+          .update({'responsible_id': u.id})
+          .eq('id', widget.family.id);
+      // Mise à jour locale immédiate
+      setState(() {
+        // Ne change pas la liste mais l'UI se rafraîchira via Realtime
+      });
+      widget.onUpdate();
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ _setAsResponsible: $e');
+    }
+  }
+
+  /// Retire le statut de responsable (responsible_id devient NULL).
+  /// Le trigger SQL démotera u en fidèle si plus respo ailleurs.
+  Future<void> _removeResponsibleStatus(UserModel u) async {
+    showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Retirer ce responsable ?'),
+        content: Text(
+            "${u.fullName} ne sera plus responsable de cette famille. "
+            "S'il n'est responsable d'aucune autre famille, il sera retiré du Comité."),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Annuler'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () async {
+              Navigator.pop(ctx);
+              try {
+                await Supabase.instance.client
+                    .from('families')
+                    .update({'responsible_id': null})
+                    .eq('id', widget.family.id);
+                widget.onUpdate();
+              } catch (_) {}
+            },
+            child: const Text('Retirer'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _removeMember(UserModel u) async {
     showCupertinoDialog(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Retirer ce membre ?'),
-        content: Text('${u.fullName} ne fera plus partie de cette famille.'),
+        title: Text('Retirer ${u.fullName} ?'),
+        content: Text(
+            'Voulez-vous vraiment retirer ${u.fullName} de la famille "${widget.family.name}" ?'),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx),
@@ -529,36 +712,63 @@ class FamilyDetailScreenState extends State<FamilyDetailScreen> {
             : ListView(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
                 children: [
-                  // ── Bouton "Faire l'appel" (visible pour tous) ────────
-                  SizedBox(
-                    width: double.infinity,
-                    child: CupertinoButton(
-                      color: blue,
-                      borderRadius: BorderRadius.circular(14),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      onPressed: _members.isEmpty ? null : _doAttendance,
-                      disabledColor: blue.withValues(alpha: 0.4),
+                  // ── Bouton "Faire l'appel" — CACHÉ pour le Comité
+                  //    (la liste des responsables est un statut, pas un groupe
+                  //     pour lequel on fait l'appel)
+                  if (!widget.family.isInstitutional) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: CupertinoButton(
+                        color: blue,
+                        borderRadius: BorderRadius.circular(14),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        onPressed: _members.isEmpty ? null : _doAttendance,
+                        disabledColor: blue.withValues(alpha: 0.4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            Icon(CupertinoIcons.checkmark_seal_fill,
+                                size: 18, color: CupertinoColors.white),
+                            SizedBox(width: 8),
+                            Text(
+                              "Faire l'appel",
+                              style: TextStyle(
+                                inherit: false,
+                                fontFamily: IOSTheme.fontFamily,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: CupertinoColors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                  ] else ...[
+                    // Bannière info pour le Comité
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: IOSTheme.systemOrangeLight.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(CupertinoIcons.checkmark_seal_fill,
-                              size: 18, color: CupertinoColors.white),
-                          SizedBox(width: 8),
-                          Text(
-                            "Faire l'appel",
-                            style: TextStyle(
-                              inherit: false,
-                              fontFamily: IOSTheme.fontFamily,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                              color: CupertinoColors.white,
+                        children: [
+                          Icon(CupertinoIcons.info_circle_fill,
+                              color: IOSTheme.systemOrangeLight, size: 18),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              "Liste officielle des responsables de l'église. La composition est gérée automatiquement selon le rôle de chaque membre.",
+                              style: IOSTheme.footnote(context),
                             ),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 22),
+                    const SizedBox(height: 18),
+                  ],
 
                   // ── Section "Membres" ──────────────────────────────
                   Padding(
@@ -595,71 +805,71 @@ class FamilyDetailScreenState extends State<FamilyDetailScreen> {
                           final isLast = i == _members.length - 1;
                           final isResp =
                               widget.family.responsibleId == u.id;
+                          final roleLabel =
+                              AppConstants.labelOfChurchRole(u.churchRole);
                           return Column(
                             children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 14, vertical: 10),
-                                child: Row(
-                                  children: [
-                                    UserAvatar(
-                                      firstName: u.firstName,
-                                      lastName: u.lastName,
-                                      avatarUrl: u.avatarUrl,
-                                      size: 36,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(u.fullName,
-                                              style:
-                                                  IOSTheme.body(context)
-                                                      .copyWith(
-                                                          fontWeight:
-                                                              FontWeight
-                                                                  .w500)),
-                                          if (isResp)
-                                            Text('Responsable',
-                                                style:
-                                                    IOSTheme.footnote(context)
-                                                        .copyWith(
-                                                            color: IOSTheme
-                                                                .systemOrangeLight,
-                                                            fontWeight:
-                                                                FontWeight.w600))
-                                          else if (u.role != null &&
-                                              u.role!.isNotEmpty)
-                                            Text(u.role!,
-                                                style:
-                                                    IOSTheme.footnote(context)),
-                                        ],
+                              CupertinoButton(
+                                padding: EdgeInsets.zero,
+                                onPressed: canManage
+                                    ? () => _showMemberActions(u, isResp)
+                                    : null,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14, vertical: 10),
+                                  child: Row(
+                                    children: [
+                                      UserAvatar(
+                                        firstName: u.firstName,
+                                        lastName: u.lastName,
+                                        avatarUrl: u.avatarUrl,
+                                        size: 36,
                                       ),
-                                    ),
-                                    if (canManage && !isResp)
-                                      CupertinoButton(
-                                        padding: EdgeInsets.zero,
-                                        minimumSize: Size.zero,
-                                        onPressed: () => _removeMember(u),
-                                        child: Container(
-                                          width: 30,
-                                          height: 30,
-                                          decoration: BoxDecoration(
-                                            color: IOSTheme.systemRed(context)
-                                                .withValues(alpha: 0.12),
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                          ),
-                                          child: Icon(
-                                            CupertinoIcons.minus,
-                                            size: 16,
-                                            color: IOSTheme.systemRed(context),
-                                          ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(u.fullName,
+                                                style: IOSTheme.body(context)
+                                                    .copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w500)),
+                                            const SizedBox(height: 2),
+                                            // Rôle d'église affiché en dessous
+                                            // — orange + "Responsable" si c'est
+                                            // le respo de CETTE famille
+                                            if (isResp)
+                                              Text(
+                                                u.churchRole == AppConstants
+                                                            .churchRoleResponsableFamille
+                                                    ? 'Responsable'
+                                                    : '$roleLabel · Responsable',
+                                                style: IOSTheme.footnote(
+                                                        context)
+                                                    .copyWith(
+                                                        color: IOSTheme
+                                                            .systemOrangeLight,
+                                                        fontWeight:
+                                                            FontWeight.w600),
+                                              )
+                                            else
+                                              Text(roleLabel,
+                                                  style:
+                                                      IOSTheme.footnote(context)),
+                                          ],
                                         ),
                                       ),
-                                  ],
+                                      if (canManage)
+                                        Icon(
+                                          CupertinoIcons.chevron_right,
+                                          size: 14,
+                                          color:
+                                              IOSTheme.tertiaryLabel(context),
+                                        ),
+                                    ],
+                                  ),
                                 ),
                               ),
                               if (!isLast)

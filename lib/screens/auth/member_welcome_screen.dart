@@ -17,6 +17,7 @@ import '../../models/church_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../widgets/animated_background.dart';
 import '../../widgets/app_logo.dart';
+import '../../widgets/permissions_modal.dart';
 
 class MemberWelcomeScreen extends StatefulWidget {
   const MemberWelcomeScreen({super.key});
@@ -33,7 +34,16 @@ class _MemberWelcomeScreenState extends State<MemberWelcomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadChurch());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadChurch();
+      if (!mounted) return;
+      // Affiche le modal de demande de permissions juste après l'inscription
+      await showCupertinoDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const PermissionsModal(),
+      );
+    });
   }
 
   Future<void> _loadChurch() async {
@@ -144,7 +154,7 @@ class _MemberWelcomeScreenState extends State<MemberWelcomeScreen> {
 
                         // "à l'église <nom>"
                         Text(
-                          'à ${_church?.name ?? "MonÉglise"}',
+                          "à l'église ${_church?.name ?? "MonÉglise"}",
                           style: TextStyle(
                             inherit: false,
                             fontFamily: IOSTheme.fontFamily,
@@ -171,8 +181,8 @@ class _MemberWelcomeScreenState extends State<MemberWelcomeScreen> {
                             borderRadius: BorderRadius.circular(16),
                             padding:
                                 const EdgeInsets.symmetric(vertical: 17),
-                            onPressed: () => Navigator.pushReplacementNamed(
-                                context, '/member-dashboard'),
+                            onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                                context, '/member-dashboard', (_) => false),
                             child: const Text(
                               'Entrer',
                               style: TextStyle(

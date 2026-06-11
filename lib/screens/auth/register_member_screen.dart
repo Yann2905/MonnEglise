@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../providers/auth_provider.dart';
 import '../../core/cupertino_theme.dart';
 import '../../core/constants.dart';
@@ -24,7 +25,22 @@ import '../../widgets/ios_date_picker_field.dart';
 import '../../widgets/ios_phone_field.dart';
 
 class RegisterMemberScreen extends StatefulWidget {
-  const RegisterMemberScreen({super.key});
+  /// Code d'invitation pré-validé (depuis ChurchCodeScreen).
+  /// Si fourni, l'écran skippe directement à l'étape formulaire.
+  final String? preValidatedCode;
+
+  /// ID de l'admin résolu depuis le code.
+  final String? preValidatedAdminId;
+
+  /// ID de l'église résolue depuis le code (utilisé pour charger les familles).
+  final String? preValidatedChurchId;
+
+  const RegisterMemberScreen({
+    super.key,
+    this.preValidatedCode,
+    this.preValidatedAdminId,
+    this.preValidatedChurchId,
+  });
 
   @override
   State<RegisterMemberScreen> createState() => _RegisterMemberScreenState();
@@ -32,7 +48,7 @@ class RegisterMemberScreen extends StatefulWidget {
 
 class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
   // Étape : 1 = code, 2 = formulaire, 3 = OTP
-  int _currentStep = 1;
+  late int _currentStep;
 
   final _authService = AuthService();
   final _dbService = DatabaseService();
@@ -48,6 +64,7 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
   final _quartierController = TextEditingController();
   String _completePhoneNumber = '';
   String? _selectedRole;
+  String? _selectedGender; // 'homme' | 'femme'
   List<String> _selectedFamilyIds = [];
   List<Map<String, dynamic>> _availableFamilies = [];
   DateTime? _birthDate;
@@ -59,6 +76,25 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
   final _otpControllers = List.generate(6, (_) => TextEditingController());
   final _otpFocusNodes = List.generate(6, (_) => FocusNode());
   Map<String, String>? _pendingData;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.preValidatedCode != null && widget.preValidatedAdminId != null) {
+      _currentStep = 2;
+      _memberCodeController.text = widget.preValidatedCode!;
+      _validatedAdminId = widget.preValidatedAdminId;
+      // Pré-charge les familles via le church_id (créées par le pasteur principal)
+      final churchId = widget.preValidatedChurchId;
+      if (churchId != null && churchId.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _loadFamilies(churchId);
+        });
+      }
+    } else {
+      _currentStep = 1;
+    }
+  }
 
   @override
   void dispose() {
@@ -99,6 +135,41 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
     );
   }
 
+  /// Modal "Félicitations vous êtes le/la responsable de [famille]"
+  /// Retourne true si l'utilisateur confirme, false/null s'il annule.
+  Future<bool?> _showCongrats(String article, String familyName) {
+    final blue = IOSTheme.systemBlue(context);
+    return showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Column(
+          children: [
+            Icon(CupertinoIcons.star_circle_fill, color: blue, size: 44),
+            const SizedBox(height: 8),
+            const Text('Félicitations !'),
+          ],
+        ),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            "Vous êtes $article${familyName.isEmpty ? '' : ' de "$familyName"'}.",
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annuler'),
+          ),
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Continuer'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ══════════════════════════════════════════════
   //  ÉTAPE 1 : CODE MEMBRE
   // ══════════════════════════════════════════════
@@ -113,7 +184,17 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
       final adminId = await _authService.resolveJoinCode(code);
       if (!mounted) return;
       if (adminId != null) {
-        await _loadFamilies(adminId);
+        // On résout le church_id depuis l'admin pour charger les bonnes familles
+        final supa = Supabase.instance.client;
+        final row = await supa
+            .from('users')
+            .select('church_id')
+            .eq('id', adminId)
+            .maybeSingle();
+        final churchId = row?['church_id'] as String?;
+        if (churchId != null && churchId.isNotEmpty) {
+          await _loadFamilies(churchId);
+        }
         setState(() {
           _validatedAdminId = adminId;
           _currentStep = 2;
@@ -166,10 +247,32 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
     if (_selectedRole == null) {
       return _alert('Rôle requis', 'Veuillez sélectionner votre rôle.');
     }
-    if (_selectedRole == AppConstants.roleResponsable &&
+    // Genre : déduit pour Diacre/Diaconesse, sinon obligatoire
+    final implied =
+        AppConstants.impliedGenderForRole(_selectedRole!);
+    final genderToUse = implied ?? _selectedGender;
+    if (genderToUse == null) {
+      return _alert(
+          'Genre requis', 'Veuillez sélectionner Homme ou Femme.');
+    }
+    if (_selectedRole == AppConstants.churchRoleResponsableFamille &&
         _selectedFamilyIds.length != 1) {
       return _alert('Famille requise',
           "Un responsable doit être affecté à exactement une famille.");
+    }
+
+    // Modal "Félicitations" si responsable
+    if (_selectedRole == AppConstants.churchRoleResponsableFamille &&
+        _selectedFamilyIds.isNotEmpty) {
+      final familyName = _availableFamilies
+              .firstWhere((f) => f['id'] == _selectedFamilyIds.first,
+                  orElse: () => {'name': ''})['name'] ??
+          '';
+      final article = genderToUse == AppConstants.genderFemale
+          ? 'la responsable'
+          : 'le responsable';
+      final confirmed = await _showCongrats(article, familyName);
+      if (confirmed != true) return; // user a annulé
     }
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
@@ -178,7 +281,9 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
       'lastName': lastName,
       'phone': _completePhoneNumber,
       'quartier': quartier,
-      'role': _selectedRole!,
+      'role': _selectedRole!,         // (legacy) — toujours stocké
+      'churchRole': _selectedRole!,   // nouveau système (snake_case)
+      'gender': genderToUse,
       'familyIds': _selectedFamilyIds.join(','),
       if (_birthDate != null)
         'birthDate':
@@ -188,14 +293,19 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
     // L'avatar est passé hors du map (XFile non sérialisable)
     auth.setPendingAvatar(_avatarFile);
 
-    final ok = await auth.registerMember(
-        _memberCodeController.text.trim().toUpperCase(), _pendingData!);
+    // Mode sans OTP : inscription directe + auto-login
+    final ok = await auth.registerMemberDirect(
+      memberCode: _memberCodeController.text.trim().toUpperCase(),
+      data: _pendingData!,
+    );
 
     if (!mounted) return;
     if (ok) {
-      setState(() => _currentStep = 3);
+      // Direct vers la page de bienvenue (plus d'OTP)
+      Navigator.pushReplacementNamed(context, '/member-welcome');
     } else {
-      _alert('Erreur', auth.errorMessage ?? "Impossible d'envoyer le code.");
+      _alert(
+          'Erreur', auth.errorMessage ?? "Inscription impossible.");
     }
   }
 
@@ -268,7 +378,11 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
-              if (_currentStep > 1) {
+              // Si on a sauté l'étape 1 (code pré-validé), back = quitter l'écran
+              final hasPreValidated = widget.preValidatedCode != null;
+              if (_currentStep > 1 && !hasPreValidated) {
+                setState(() => _currentStep -= 1);
+              } else if (_currentStep > 2 && hasPreValidated) {
                 setState(() => _currentStep -= 1);
               } else if (Navigator.canPop(context)) {
                 Navigator.pop(context);
@@ -492,6 +606,12 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
 
               const SizedBox(height: 20),
 
+              _sectionHeader('GENRE'),
+              const SizedBox(height: 8),
+              _genderSelector(),
+
+              const SizedBox(height: 20),
+
               _sectionHeader('RÔLE'),
               const SizedBox(height: 8),
               _roleSelector(),
@@ -500,7 +620,7 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
                 const SizedBox(height: 20),
                 _sectionHeader('FAMILLE(S)'),
                 const SizedBox(height: 8),
-                if (_selectedRole == AppConstants.roleResponsable)
+                if (_selectedRole == AppConstants.churchRoleResponsableFamille)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Container(
@@ -544,6 +664,70 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
     );
   }
 
+  /// Sélecteur de genre — masqué si rôle déduit (Diacre/Diaconesse)
+  Widget _genderSelector() {
+    final blue = IOSTheme.systemBlue(context);
+    // Si rôle implique le genre, on l'affiche en lecture seule
+    final impliedFromRole = _selectedRole == null
+        ? null
+        : AppConstants.impliedGenderForRole(_selectedRole!);
+    final activeGender = impliedFromRole ?? _selectedGender;
+    final locked = impliedFromRole != null;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: IOSTheme.cardBackground(context),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: List.generate(AppConstants.allGenders.length, (i) {
+          final g = AppConstants.allGenders[i];
+          final isSelected = activeGender == g;
+          final label = AppConstants.genderLabels[g] ?? g;
+          return Expanded(
+            child: CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: locked
+                  ? null
+                  : () => setState(() => _selectedGender = g),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? blue.withValues(alpha: 0.12)
+                      : CupertinoColors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      g == AppConstants.genderMale
+                          ? CupertinoIcons.person_fill
+                          : CupertinoIcons.person_fill,
+                      color: isSelected ? blue : IOSTheme.tertiaryLabel(context),
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(label,
+                        style: IOSTheme.body(context).copyWith(
+                          fontWeight: isSelected
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                          color: isSelected
+                              ? IOSTheme.label(context)
+                              : IOSTheme.secondaryLabel(context),
+                        )),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
   Widget _roleSelector() {
     final blue = IOSTheme.systemBlue(context);
     return Container(
@@ -552,9 +736,9 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
-        children: List.generate(AppConstants.memberRoles.length, (i) {
-          final role = AppConstants.memberRoles[i];
-          final isLast = i == AppConstants.memberRoles.length - 1;
+        children: List.generate(AppConstants.signupChurchRoles.length, (i) {
+          final role = AppConstants.signupChurchRoles[i];
+          final isLast = i == AppConstants.signupChurchRoles.length - 1;
           final isSelected = _selectedRole == role;
           return Column(
             children: [
@@ -563,7 +747,13 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
                 onPressed: () {
                   setState(() {
                     _selectedRole = role;
-                    if (role == AppConstants.roleResponsable &&
+                    // Genre auto-déduit pour Diacre (homme) / Diaconesse (femme)
+                    final implied = AppConstants.impliedGenderForRole(role);
+                    if (implied != null) {
+                      _selectedGender = implied;
+                    }
+                    // Responsable famille : on contraint à 1 seule famille
+                    if (role == AppConstants.churchRoleResponsableFamille &&
                         _selectedFamilyIds.length > 1) {
                       _selectedFamilyIds = [];
                     }
@@ -575,9 +765,11 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text(role,
-                            style: IOSTheme.body(context),
-                            overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          AppConstants.labelOfChurchRole(role),
+                          style: IOSTheme.body(context),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                       if (isSelected)
                         Icon(CupertinoIcons.checkmark, color: blue, size: 20),
@@ -622,7 +814,8 @@ class _RegisterMemberScreenState extends State<RegisterMemberScreen> {
                             _selectedFamilyIds.remove(f['id']);
                           } else {
                             if (_selectedRole ==
-                                AppConstants.roleResponsable) {
+                                AppConstants
+                                    .churchRoleResponsableFamille) {
                               _selectedFamilyIds = [f['id']];
                             } else {
                               _selectedFamilyIds.add(f['id']);

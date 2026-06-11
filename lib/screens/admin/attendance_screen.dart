@@ -58,10 +58,43 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   DateTime? _selectedDay;
   Map<DateTime, List<Map<String, dynamic>>> _calendarEvents = {};
 
+  RealtimeChannel? _channel;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _init());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _init();
+      _subscribe();
+    });
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  /// Realtime : reload l'historique à chaque nouvelle absence enregistrée
+  /// dans cette église.
+  void _subscribe() {
+    final churchId = _currentUser?.churchId;
+    if (churchId == null || churchId.isEmpty) return;
+    _channel?.unsubscribe();
+    _channel = _supabase
+        .channel('admin_attendance_$churchId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'absences',
+          callback: (_) {
+            if (mounted) {
+              _loadHistory();
+              _loadCalendar();
+            }
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _init() async {
@@ -172,7 +205,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
       final actorName = _currentUser!.fullName;
 
-      await _supabase.from('absences').insert({
+      // ─────────────────────────────────────────────────────────────────
+      //  LEGACY : table `absences` (vue récapitulative par famille/service)
+      //  Gardée pour ne pas casser l'historique existant côté UI.
+      // ─────────────────────────────────────────────────────────────────
+      final absenceInserted = await _supabase.from('absences').insert({
         'family_id': _selectedFamily!.id,
         'family_name': _selectedFamily!.name,
         'date': today.toIso8601String(),
@@ -181,7 +218,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         'absent_members': absentList,
         if (serviceId != null) 'service_id': serviceId,
         'actor_name': actorName,
-      });
+      }).select('id').single();
+      final absenceId = absenceInserted['id'] as String?;
+
+      // ─────────────────────────────────────────────────────────────────
+      //  NOUVEAU : table `attendance` — 1 row par membre par service.
+      //  Source de vérité pour les stats individuelles (taux de présence,
+      //  absences cumulées, etc.). Nécessite un service_id valide.
+      // ─────────────────────────────────────────────────────────────────
+      if (serviceId != null) {
+        final attendanceRows = _members.map((m) {
+          final isAbsent = _absentIds.contains(m.id);
+          return {
+            'service_id':  serviceId,
+            'user_id':     m.id,
+            'family_id':   _selectedFamily!.id,
+            'status':      isAbsent ? 'absent' : 'present',
+            'recorded_by': _currentUser!.id,
+          };
+        }).toList();
+
+        try {
+          await _supabase.from('attendance').upsert(
+                attendanceRows,
+                onConflict: 'service_id,user_id',
+              );
+        } catch (e) {
+          // ignore: avoid_print
+          print('⚠️ attendance upsert: $e');
+          // L'enregistrement legacy a réussi → on ne bloque pas l'UX
+        }
+      }
 
       // ── Notif automatique au pasteur (admin de l'église) ─────────
       // Seulement si le user qui fait l'appel n'est PAS lui-même l'admin.
@@ -203,6 +270,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             'receiver_id': adminId,
             'actor_name': actorName,
             'is_read': false,
+            // Stocke l'absence_id pour permettre la navigation depuis la notif
+            if (absenceId != null)
+              'metadata': {'absence_id': absenceId},
           });
         }
       } catch (_) {
@@ -322,6 +392,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             largeTitle: const Text('Absences'),
             backgroundColor:
                 IOSTheme.groupedBackground(context).withValues(alpha: 0.85),
+            transitionBetweenRoutes: false,
           ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),

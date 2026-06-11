@@ -20,6 +20,7 @@ import '../../models/church_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../widgets/animated_background.dart';
 import '../../widgets/app_logo.dart';
+import '../../widgets/permissions_modal.dart';
 
 class AdminWelcomeScreen extends StatefulWidget {
   const AdminWelcomeScreen({super.key});
@@ -36,7 +37,15 @@ class _AdminWelcomeScreenState extends State<AdminWelcomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadChurch());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadChurch();
+      if (!mounted) return;
+      await showCupertinoDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const PermissionsModal(),
+      );
+    });
   }
 
   Future<void> _loadChurch() async {
@@ -275,8 +284,8 @@ class _AdminWelcomeScreenState extends State<AdminWelcomeScreen> {
                             borderRadius: BorderRadius.circular(16),
                             padding:
                                 const EdgeInsets.symmetric(vertical: 17),
-                            onPressed: () => Navigator.pushReplacementNamed(
-                                context, '/admin-dashboard'),
+                            onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                                context, '/admin-dashboard', (_) => false),
                             child: const Text(
                               'Entrer',
                               style: TextStyle(

@@ -12,6 +12,14 @@
 .swiftpm/
 migrate_working_dir/
 
+# Firebase Service Account / secrets (NE JAMAIS COMMIT)
+*-firebase-adminsdk-*.json
+*-service-account*.json
+service-account*.json
+.env
+.env.local
+.env.*.local
+
 # IntelliJ related
 *.iml
 *.ipr
@@ -45,6 +53,6 @@ app.*.map.json
 /android/app/release
 
 # Outputs temporaires
-.flutter_analyze_output*.txt
+.flutter_analyze*.txt
 analyze*.txt
 android/build/

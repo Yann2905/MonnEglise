@@ -41,6 +41,9 @@ class UserModel {
   // URL de l'avatar (optionnel)
   final String? avatarUrl;
 
+  // Public_id Cloudinary de l'avatar (pour suppression)
+  final String? avatarPublicId;
+
   // L'utilisateur est-il responsable d'une famille ? (true/false)
   final bool isResponsible;
 
@@ -50,8 +53,15 @@ class UserModel {
   // Code admin (pour les membres, référence au code de l'admin)
   final String? adminCode;
 
-  // Rôle spécifique (optionnel : 'Fidèle', 'Diacre', 'Pasteur', etc.)
+  // Rôle spécifique (optionnel : 'Fidèle', 'Diacre', 'Pasteur', etc.) — LEGACY
   final String? role;
+
+  // Rôle d'église (nouveau système — valeurs : 'pasteur_principal',
+  // 'pasteur_secondaire', 'responsable_famille', 'diacre', 'diaconesse', 'fidele')
+  final String churchRole;
+
+  // Genre — 'homme' | 'femme' | null (legacy)
+  final String? gender;
 
   // Liste des IDs des familles dont l'utilisateur fait partie
   final List<String> familyIds;
@@ -76,10 +86,13 @@ class UserModel {
     required this.lastName,
     required this.quartier,
     this.avatarUrl,
+    this.avatarPublicId,
     this.isResponsible = false,
     this.memberCode,
     this.adminCode,
     this.role,
+    this.churchRole = 'fidele',
+    this.gender,
     this.familyIds = const [],
     this.birthDate,
     required this.createdAt,
@@ -113,10 +126,13 @@ class UserModel {
       lastName: data['last_name']?.toString() ?? '',
       quartier: data['quartier']?.toString() ?? '',
       avatarUrl: data['avatar_url']?.toString(),
+      avatarPublicId: data['avatar_public_id']?.toString(),
       isResponsible: data['is_responsible'] ?? false,
       memberCode: data['member_code']?.toString(),
       adminCode: data['admin_code']?.toString(),  // ✅ Ajouté
       role: data['role']?.toString(),
+      churchRole: data['church_role']?.toString() ?? 'fidele',
+      gender: data['gender']?.toString(),
       familyIds: data['family_ids'] != null
           ? List<String>.from(data['family_ids'] as List<dynamic>)
           : [],
@@ -152,9 +168,12 @@ class UserModel {
       'last_name': lastName,
       'quartier': quartier,
       'avatar_url': avatarUrl,
+      'avatar_public_id': avatarPublicId,
       'is_responsible': isResponsible,
       'member_code': memberCode,
       'role': role,
+      'church_role': churchRole,
+      'gender': gender,
       'family_ids': familyIds,
       'birth_date':
           birthDate?.toIso8601String().substring(0, 10), // YYYY-MM-DD
@@ -184,6 +203,8 @@ class UserModel {
     String? memberCode,
     String? adminCode,
     String? role,
+    String? churchRole,
+    String? gender,
     List<String>? familyIds,
     DateTime? updatedAt,
   }) {
@@ -201,6 +222,8 @@ class UserModel {
       memberCode: memberCode ?? this.memberCode,
       adminCode: adminCode ?? this.adminCode,
       role: role ?? this.role,
+      churchRole: churchRole ?? this.churchRole,
+      gender: gender ?? this.gender,
       familyIds: familyIds ?? this.familyIds,
       createdAt: createdAt, // createdAt ne change jamais
       updatedAt: updatedAt ?? DateTime.now(),

@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "490122102968",
-    "project_id": "mon-eglise-2025",
-    "storage_bucket": "mon-eglise-2025.firebasestorage.app"
+    "project_number": "1001792393824",
+    "project_id": "moneglise-8c5c8",
+    "storage_bucket": "moneglise-8c5c8.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:490122102968:android:6e073bb4f705080b278c4d",
+        "mobilesdk_app_id": "1:1001792393824:android:b6b03bdd338fef5a542905",
         "android_client_info": {
           "package_name": "com.example.claude"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyCHnxjI9x_AVLNJp8Vzb0NeHloCrbExhFs"
+          "current_key": "AIzaSyB7mUS89fOAOZLM6rW-PWt7iVj9Y6PLv_g"
         }
       ],
       "services": {

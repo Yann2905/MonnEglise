@@ -83,23 +83,26 @@ class _LoginScreenState extends State<LoginScreen>
   //  ACTIONS
   // ══════════════════════════════════════════════
 
+  /// Mode sans OTP : connexion directe par numéro de téléphone.
   Future<void> _handleSendOTP() async {
     final phone = _completePhoneNumber.trim();
-    final err   = Validators.validatePhone(phone);
+    final err = Validators.validatePhone(phone);
     if (err != null) {
       _showAlert('Numéro invalide', err);
       return;
     }
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
-    final ok   = await auth.sendOTP(phone);
+    final ok = await auth.loginByPhone(phone);
     if (!mounted) return;
 
     if (ok) {
-      await _animateToStep(2);
-      _showAlert('Code envoyé', 'Code envoyé au $phone');
+      _showSuccessAndNavigate(auth);
     } else {
-      _showAlert('Erreur', auth.errorMessage ?? "Impossible d'envoyer le code");
+      _showAlert(
+          'Numéro non reconnu',
+          auth.errorMessage ??
+              "Ce numéro n'est pas inscrit. Crée un compte d'abord.");
     }
   }
 
@@ -158,9 +161,10 @@ class _LoginScreenState extends State<LoginScreen>
             isDefaultAction: true,
             onPressed: () {
               Navigator.pop(ctx);
-              Navigator.pushReplacementNamed(
+              Navigator.pushNamedAndRemoveUntil(
                 context,
                 auth.isAdmin ? '/admin-dashboard' : '/member-dashboard',
+                (_) => false,
               );
             },
             child: const Text('OK'),
@@ -254,9 +258,7 @@ class _LoginScreenState extends State<LoginScreen>
 
                         // ── Titre Cormorant ──
                         Text(
-                          _currentStep == 1
-                              ? 'Bienvenue'
-                              : 'Vérification',
+                          'Bienvenue',
                           style: IOSTheme.largeTitle(context),
                         )
                         .animate()
@@ -267,9 +269,7 @@ class _LoginScreenState extends State<LoginScreen>
 
                         // ── Sous-titre ──
                         Text(
-                          _currentStep == 1
-                              ? 'Entrez votre numéro de téléphone pour vous connecter.'
-                              : 'Entrez le code à 6 chiffres reçu par SMS au $_completePhoneNumber.',
+                          'Entrez votre numéro de téléphone pour vous connecter.',
                           style: IOSTheme.body(context).copyWith(
                             color: IOSTheme.secondaryLabel(context),
                             height: 1.4,
@@ -280,21 +280,14 @@ class _LoginScreenState extends State<LoginScreen>
 
                         const SizedBox(height: 36),
 
-                        if (_currentStep == 1)
-                          _buildPhoneStep(auth, blue)
-                            .animate(delay: 200.ms)
-                            .fadeIn(duration: 400.ms)
-                            .slideY(begin: 0.10, end: 0, duration: 400.ms, curve: Curves.easeOutCubic)
-                        else
-                          _buildOtpStep(auth, blue)
-                            .animate()
-                            .fadeIn(duration: 320.ms)
-                            .slideX(begin: 0.06, end: 0, duration: 320.ms, curve: Curves.easeOutCubic),
+                        _buildPhoneStep(auth, blue)
+                          .animate(delay: 200.ms)
+                          .fadeIn(duration: 400.ms)
+                          .slideY(begin: 0.10, end: 0, duration: 400.ms, curve: Curves.easeOutCubic),
 
                         const SizedBox(height: 28),
 
-                        if (_currentStep == 1)
-                          Row(
+                        Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(

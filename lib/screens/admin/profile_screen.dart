@@ -12,6 +12,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_provider.dart';
@@ -297,30 +298,89 @@ class ProfileScreen extends StatelessWidget {
   Future<void> _changeAvatar(BuildContext context, AuthProvider auth) async {
     final user = auth.currentUser;
     if (user == null) return;
-    final file = await AvatarService.pickFromActionSheet(context);
-    if (file == null) return;
-    final url = await AvatarService.uploadAndSave(
-      userId: user.id,
-      xfile: file,
-    );
-    if (url != null) {
-      await auth.refreshUser();
-    } else if (context.mounted) {
-      showCupertinoDialog(
+
+    final hasExisting = user.avatarUrl != null && user.avatarUrl!.isNotEmpty;
+
+    AvatarPickResult? choice;
+    try {
+      choice = await AvatarService.pickFromActionSheet(
+        context,
+        hasExisting: hasExisting,
+      );
+    } catch (_) {
+      return;
+    }
+    if (choice == null) return; // annulé
+
+    // → Suppression de la photo existante (avec confirmation)
+    if (choice.action == AvatarPickAction.delete) {
+      final confirmed = await showCupertinoDialog<bool>(
         context: context,
         builder: (ctx) => CupertinoAlertDialog(
-          title: const Text('Erreur'),
-          content: const Text("Impossible d'envoyer la photo."),
+          title: const Text('Supprimer la photo ?'),
+          content: const Text(
+              'Voulez-vous vraiment supprimer votre photo de profil ? Les initiales seront affichées à la place.'),
           actions: [
             CupertinoDialogAction(
-              isDefaultAction: true,
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Annuler'),
+            ),
+            CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Supprimer'),
             ),
           ],
         ),
       );
+      if (confirmed != true) return;
+
+      final ok = await AvatarService.deleteAvatar(
+        userId: user.id,
+        publicId: user.avatarPublicId,
+      );
+      if (ok) {
+        auth.updateLocalAvatarUrl('');
+        await auth.refreshUser();
+      } else if (context.mounted) {
+        _showError(context, "Impossible de supprimer la photo.");
+      }
+      return;
     }
+
+    // → Upload d'une nouvelle photo (l'ancienne sera nettoyée par le service)
+    try {
+      final url = await AvatarService.uploadAndSave(
+        userId: user.id,
+        xfile: choice.file!,
+        oldPublicId: user.avatarPublicId,
+      );
+      if (url == null) {
+        if (context.mounted) _showError(context, "Upload impossible.");
+        return;
+      }
+      auth.updateLocalAvatarUrl(url);
+      await auth.refreshUser();
+    } catch (e) {
+      if (context.mounted) _showError(context, 'UPLOAD: $e');
+    }
+  }
+
+  void _showError(BuildContext context, String msg) {
+    showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Debug avatar'),
+        content: Text(msg),
+        actions: [
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _confirmLogout(BuildContext context, AuthProvider auth) {
@@ -339,7 +399,7 @@ class ProfileScreen extends StatelessWidget {
             isDestructiveAction: true,
             onPressed: () async {
               Navigator.pop(ctx);
-              await auth.logout();
+              await auth.logoutDirect();
               if (context.mounted) {
                 Navigator.of(context, rootNavigator: true)
                     .pushNamedAndRemoveUntil('/login', (_) => false);

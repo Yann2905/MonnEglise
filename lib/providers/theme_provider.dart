@@ -10,8 +10,9 @@ import 'package:shared_preferences/shared_preferences.dart'; // Permet de sauveg
 // Classe principale qui gère le thème de l'application
 // ------------------------------------------------------------
 class ThemeProvider with ChangeNotifier {
-  // Le thème actuellement appliqué (clair, sombre ou système)
-  ThemeMode _themeMode = ThemeMode.system;
+  // Le thème actuellement appliqué (clair par défaut — l'utilisateur peut
+  // basculer manuellement vers sombre dans Profil > Mode sombre).
+  ThemeMode _themeMode = ThemeMode.light;
 
   // Nom utilisé pour sauvegarder la préférence dans SharedPreferences
   static const String _themePrefKey = 'theme_mode';
@@ -42,7 +43,7 @@ class ThemeProvider with ChangeNotifier {
         // Transforme la chaîne enregistrée en vrai ThemeMode
         _themeMode = ThemeMode.values.firstWhere(
               (mode) => mode.toString() == savedTheme,
-          orElse: () => ThemeMode.system, // Si erreur : thème système
+          orElse: () => ThemeMode.light, // Si erreur : thème clair
         );
 
         notifyListeners(); // Met à jour l'application

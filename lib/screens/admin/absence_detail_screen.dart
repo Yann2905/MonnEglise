@@ -7,17 +7,70 @@
  */
 
 import 'package:flutter/cupertino.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/cupertino_theme.dart';
 import '../../models/absence_model.dart';
+import '../../widgets/user_avatar.dart';
 
-class AbsenceDetailScreen extends StatelessWidget {
+class AbsenceDetailScreen extends StatefulWidget {
   final AbsenceModel absence;
   const AbsenceDetailScreen({super.key, required this.absence});
+
+  @override
+  State<AbsenceDetailScreen> createState() => _AbsenceDetailScreenState();
+}
+
+class _AbsenceDetailScreenState extends State<AbsenceDetailScreen> {
+  final _supabase = Supabase.instance.client;
+  // user_id → { 'first_name', 'last_name', 'avatar_url' }
+  Map<String, Map<String, String?>> _userInfo = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAvatars());
+  }
+
+  Future<void> _loadAvatars() async {
+    try {
+      final ids = widget.absence.absentMembers
+          .map((m) => m.userId)
+          .where((id) => id.isNotEmpty)
+          .toList();
+      if (ids.isEmpty) return;
+      final data = await _supabase
+          .from('users')
+          .select('id, first_name, last_name, avatar_url')
+          .inFilter('id', ids);
+      if (!mounted) return;
+      setState(() {
+        _userInfo = {
+          for (final u in (data as List))
+            (u as Map)['id'] as String: {
+              'first_name': u['first_name'] as String?,
+              'last_name': u['last_name'] as String?,
+              'avatar_url': u['avatar_url'] as String?,
+            }
+        };
+      });
+    } catch (_) {
+      // silencieux : fallback initiales
+    }
+  }
 
   Future<void> _call(String phone) async {
     final uri = Uri(scheme: 'tel', path: phone);
     if (await canLaunchUrl(uri)) await launchUrl(uri);
+  }
+
+  /// Extrait (firstName, lastName) depuis le nom complet — pour les anciennes
+  /// absences où on n'a que `name`.
+  (String, String) _splitName(String fullName) {
+    final parts = fullName.trim().split(RegExp(r'\s+'));
+    if (parts.isEmpty) return ('', '');
+    if (parts.length == 1) return (parts[0], '');
+    return (parts[0], parts.sublist(1).join(' '));
   }
 
   @override
@@ -26,7 +79,7 @@ class AbsenceDetailScreen extends StatelessWidget {
     return CupertinoPageScaffold(
       backgroundColor: IOSTheme.groupedBackground(context),
       navigationBar: CupertinoNavigationBar(
-        middle: Text(absence.familyName,
+        middle: Text(widget.absence.familyName,
             style: TextStyle(
               inherit: false,
               fontFamily: IOSTheme.fontFamily,
@@ -66,12 +119,12 @@ class AbsenceDetailScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(absence.familyName,
+                        Text(widget.absence.familyName,
                             style: IOSTheme.body(context)
                                 .copyWith(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 2),
                         Text(
-                          '${absence.absentCount} absent${absence.absentCount > 1 ? "s" : ""} · ${absence.date.day}/${absence.date.month}/${absence.date.year}',
+                          '${widget.absence.absentCount} absent${widget.absence.absentCount > 1 ? "s" : ""} · ${widget.absence.date.day}/${widget.absence.date.month}/${widget.absence.date.year}',
                           style: IOSTheme.footnote(context),
                         ),
                       ],
@@ -87,7 +140,7 @@ class AbsenceDetailScreen extends StatelessWidget {
                   style: IOSTheme.sectionHeader(context)
                       .copyWith(fontSize: 12, letterSpacing: 0.6)),
             ),
-            if (absence.absentMembers.isEmpty)
+            if (widget.absence.absentMembers.isEmpty)
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
@@ -108,9 +161,17 @@ class AbsenceDetailScreen extends StatelessWidget {
                 ),
                 child: Column(
                   children:
-                      List.generate(absence.absentMembers.length, (i) {
-                    final m = absence.absentMembers[i];
-                    final isLast = i == absence.absentMembers.length - 1;
+                      List.generate(widget.absence.absentMembers.length, (i) {
+                    final m = widget.absence.absentMembers[i];
+                    final isLast = i == widget.absence.absentMembers.length - 1;
+                    // Données utilisateur enrichies (avatar / prénom / nom)
+                    final info = _userInfo[m.userId];
+                    final (firstNameFromSplit, lastNameFromSplit) =
+                        _splitName(m.name);
+                    final firstName =
+                        info?['first_name'] ?? firstNameFromSplit;
+                    final lastName = info?['last_name'] ?? lastNameFromSplit;
+                    final avatarUrl = info?['avatar_url'];
                     return Column(
                       children: [
                         Padding(
@@ -118,17 +179,12 @@ class AbsenceDetailScreen extends StatelessWidget {
                               horizontal: 14, vertical: 12),
                           child: Row(
                             children: [
-                              Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  color: red.withValues(alpha: 0.10),
-                                  borderRadius: BorderRadius.circular(18),
-                                ),
-                                child: Center(
-                                  child: Icon(CupertinoIcons.person_fill,
-                                      size: 16, color: red),
-                                ),
+                              UserAvatar(
+                                firstName: firstName,
+                                lastName: lastName,
+                                avatarUrl: avatarUrl,
+                                accentColor: red,
+                                size: 36,
                               ),
                               const SizedBox(width: 12),
                               Expanded(

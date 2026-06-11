@@ -63,8 +63,9 @@ class SermonDetailScreen extends StatelessWidget {
     showCupertinoDialog(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Supprimer cette prédication ?'),
-        content: const Text('Cette action est irréversible.'),
+        title: Text('Supprimer "${sermon.theme}" ?'),
+        content: const Text(
+            'Voulez-vous vraiment supprimer cette prédication ? Le fichier audio sera également supprimé. Cette action est irréversible.'),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx),
@@ -74,11 +75,27 @@ class SermonDetailScreen extends StatelessWidget {
             isDestructiveAction: true,
             onPressed: () async {
               Navigator.pop(ctx);
+              final supa = Supabase.instance.client;
               try {
-                await Supabase.instance.client
-                    .from('sermons')
-                    .delete()
-                    .eq('id', sermon.id);
+                // 1. Best-effort : supprime le fichier audio sur Cloudinary
+                //    (via Edge Function qui possède le secret API)
+                final publicId = sermon.audioPublicId;
+                if (publicId != null && publicId.isNotEmpty) {
+                  try {
+                    await supa.functions.invoke(
+                      'delete-cloudinary',
+                      body: {
+                        'public_id': publicId,
+                        'resource_type': 'video',
+                      },
+                    );
+                  } catch (_) {
+                    // Edge Function indisponible → on continue quand même
+                    // (le fichier restera orphelin, à nettoyer manuellement)
+                  }
+                }
+                // 2. Supprime la row DB
+                await supa.from('sermons').delete().eq('id', sermon.id);
                 if (context.mounted) Navigator.pop(context, 'deleted');
               } catch (_) {}
             },

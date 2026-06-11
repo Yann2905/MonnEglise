@@ -13,12 +13,16 @@ class DatabaseService {
 
   // ========================= FAMILLES =========================
 
-  Future<List<Map<String, dynamic>>> getFamilies(String adminId) async {
+  /// Liste TOUTES les familles d'une église (y compris le Comité des
+  /// responsables — celui-ci est affiché en premier dans la liste).
+  Future<List<Map<String, dynamic>>> getFamilies(String churchId) async {
     try {
       final response = await _client
-          .from('families')
+          .from('v_families_enriched')
           .select()
-          .eq('church_id', adminId)
+          .eq('church_id', churchId)
+          // Le Comité d'abord (is_institutional=true), puis les autres
+          .order('is_institutional', ascending: false)
           .order('created_at', ascending: true);
 
       return List<Map<String, dynamic>>.from(response);
@@ -46,7 +50,7 @@ class DatabaseService {
             'name': name,
             'church_id': churchId,
             'responsible_id': responsibleId ?? churchId,
-            'member_ids': <String>[],
+            // member_ids n'est PLUS écrit — source de vérité = family_members
             'created_at': DateTime.now().toIso8601String(),
             'updated_at': DateTime.now().toIso8601String(),
           })
@@ -63,7 +67,7 @@ class DatabaseService {
   Future<Map<String, dynamic>?> getFamily(String familyId) async {
     try {
       final response = await _client
-          .from('families')
+          .from('v_families_enriched')
           .select()
           .eq('id', familyId)
           .single();
@@ -186,13 +190,15 @@ class DatabaseService {
 
   // ========================= STATISTIQUES =========================
 
-  Future<int> countMembers(String adminId) async {
+  /// Compte tous les membres de l'église (filtre par church_id).
+  /// L'admin lui-même est inclus puisqu'il est aussi membre de son église.
+  Future<int> countMembers(String churchId) async {
     try {
       final res = await _client
           .from('users')
           .select()
-          .eq('admin_code', adminId)
-          .count(); // ← méthode count() 🙌
+          .eq('church_id', churchId)
+          .count();
       return res.count ?? 0;
     } catch (e) {
       print('Erreur countMembers: $e');
@@ -200,13 +206,14 @@ class DatabaseService {
     }
   }
 
-  Future<int> countFamilies(String adminId) async {
+  /// Compte toutes les familles de l'église (y compris le Comité)
+  Future<int> countFamilies(String churchId) async {
     try {
       final res = await _client
           .from('families')
           .select()
-          .eq('church_id', adminId)
-          .count(); // ← méthode count()
+          .eq('church_id', churchId)
+          .count();
       return res.count ?? 0;
     } catch (e) {
       print('Erreur countFamilies: $e');

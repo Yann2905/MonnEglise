@@ -37,14 +37,18 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _checkSession() async {
-    // Petit délai pour laisser AuthProvider s'initialiser via le constructeur
-    await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
     final auth = Provider.of<AuthProvider>(context, listen: false);
-    if (auth.currentUser != null) {
-      Navigator.pushReplacementNamed(
+
+    // Mode sans OTP : tente l'auto-login depuis SharedPreferences
+    final restored = await auth.tryAutoLogin();
+    if (!mounted) return;
+
+    if (restored && auth.currentUser != null) {
+      Navigator.pushNamedAndRemoveUntil(
         context,
         auth.isAdmin ? '/admin-dashboard' : '/member-dashboard',
+        (_) => false,
       );
     } else {
       setState(() {
@@ -116,11 +120,13 @@ class _SplashScreenState extends State<SplashScreen> {
                   Text(
                     'MonÉglise',
                     style: TextStyle(
+                      inherit: false,
                       fontFamily: IOSTheme.displayFontFamily,
                       fontSize: 44,
                       fontWeight: FontWeight.w600,
                       color: CupertinoColors.white,
                       letterSpacing: 0.5,
+                      decoration: TextDecoration.none,
                     ),
                   )
                       .animate(delay: 250.ms)
@@ -220,16 +226,6 @@ class _SplashScreenState extends State<SplashScreen> {
                           duration: 400.ms,
                           curve: Curves.easeOutCubic),
 
-                  const SizedBox(height: 18),
-
-                  // ═══════════════════════════════════════
-                  //  BYPASS DEV — preview sans authentification
-                  //  ⚠️ Retirer avant prod
-                  // ═══════════════════════════════════════
-                  _buildDevPreview(context)
-                      .animate(delay: 900.ms)
-                      .fadeIn(duration: 400.ms),
-
                   const SizedBox(height: 24),
                 ],
               ),
@@ -237,77 +233,6 @@ class _SplashScreenState extends State<SplashScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  /// Bandeau DEV : 2 mini liens pour bypass auth.
-  /// ⚠️ Retirer avant la mise en prod.
-  Widget _buildDevPreview(BuildContext context) {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Text(
-          'DEV : ',
-          style: TextStyle(
-            inherit: false,
-            fontFamily: IOSTheme.fontFamily,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: CupertinoColors.white,
-            letterSpacing: 1.0,
-          ),
-        ),
-        CupertinoButton(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          minimumSize: Size.zero,
-          onPressed: () async {
-            await auth.loadDemoAdmin();
-            if (!context.mounted) return;
-            Navigator.pushReplacementNamed(context, '/admin-dashboard');
-          },
-          child: const Text(
-            'Aperçu Admin',
-            style: TextStyle(
-              inherit: false,
-              fontFamily: IOSTheme.fontFamily,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: CupertinoColors.white,
-              decoration: TextDecoration.underline,
-              decorationColor: CupertinoColors.white,
-            ),
-          ),
-        ),
-        const Text(
-          ' · ',
-          style: TextStyle(
-            color: CupertinoColors.white,
-            fontSize: 12,
-          ),
-        ),
-        CupertinoButton(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          minimumSize: Size.zero,
-          onPressed: () async {
-            await auth.loadDemoMember();
-            if (!context.mounted) return;
-            Navigator.pushReplacementNamed(context, '/member-dashboard');
-          },
-          child: const Text(
-            'Aperçu Membre',
-            style: TextStyle(
-              inherit: false,
-              fontFamily: IOSTheme.fontFamily,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: CupertinoColors.white,
-              decoration: TextDecoration.underline,
-              decorationColor: CupertinoColors.white,
-            ),
-          ),
-        ),
-      ],
     );
   }
 
