@@ -25,11 +25,17 @@ interface SendPushBody {
   message: string;
   user_ids: string[];
   data?: Record<string, string>;
+  /** URL relative à ouvrir au clic sur la notif (ex: /admin/absence/abc) */
+  link?: string;
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SERVICE_ACCOUNT_JSON = Deno.env.get("FCM_SERVICE_ACCOUNT_JSON")!;
+// URL absolue de l'icône PWA pour les notifs web (optionnel)
+const WEB_PUSH_ICON_URL =
+  Deno.env.get("WEB_PUSH_ICON_URL") ??
+  "https://moneglise-ios.vercel.app/icons/icon-192.png";
 
 const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -133,6 +139,9 @@ Deno.serve(async (req) => {
     const { token: accessToken, projectId } = await getAccessToken();
     const fcmUrl = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
 
+    // Lien à embarquer (fallback /) → utilisé par le SW pour deep-link
+    const link = body.link || "/";
+
     // 3. Envoie 1 message par token (HTTP v1 ne supporte plus le multicast)
     const results = await Promise.allSettled(
       tokens.map((t) =>
@@ -149,18 +158,42 @@ Deno.serve(async (req) => {
                 title: body.title,
                 body: body.message,
               },
-              data: body.data ?? {},
+              // FCM exige des strings pour data — on coerce
+              // On ajoute le link dans data pour que tous les clients (Android natif,
+              // iOS natif, Web SW) puissent le récupérer.
+              data: Object.fromEntries(
+                Object.entries({ ...(body.data ?? {}), link }).map(([k, v]) => [
+                  k,
+                  String(v),
+                ]),
+              ),
               android: {
                 priority: "HIGH",
                 notification: {
                   channel_id: "moneglise_default",
                   default_sound: true,
+                  click_action: link, // deep-link Android natif
                 },
               },
               apns: {
                 payload: {
-                  aps: { sound: "default", "mutable-content": 1 },
+                  aps: {
+                    sound: "default",
+                    "mutable-content": 1,
+                    // iOS native badge — +1 à chaque notif reçue
+                    badge: 1,
+                  },
                 },
+              },
+              webpush: {
+                headers: { TTL: "86400", Urgency: "high" },
+                notification: {
+                  icon: WEB_PUSH_ICON_URL,
+                  badge: WEB_PUSH_ICON_URL,
+                  vibrate: [200, 100, 200],
+                  requireInteraction: false,
+                },
+                fcm_options: { link }, // fallback navigation pour le SW Firebase
               },
             },
           }),
