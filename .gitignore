@@ -55,4 +55,7 @@ app.*.map.json
 # Outputs temporaires
 .flutter_analyze*.txt
 analyze*.txt
+
+# Claude Code MCP config (peut contenir des tokens)
+.mcp.json
 android/build/
