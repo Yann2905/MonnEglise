@@ -11,7 +11,7 @@
 //
 //  Déploiement :
 //    supabase functions deploy delete-cloudinary --no-verify-jwt
-//    supabase secrets set CLOUDINARY_CLOUD_NAME=dobxpqyru
+//    supabase secrets set CLOUDINARY_CLOUD_NAME=dglyns7yi
 //    supabase secrets set CLOUDINARY_API_KEY=...
 //    supabase secrets set CLOUDINARY_API_SECRET=...
 // ============================================================================
