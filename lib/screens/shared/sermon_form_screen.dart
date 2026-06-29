@@ -70,28 +70,19 @@ class _SermonFormScreenState extends State<SermonFormScreen> {
 
   Future<void> _pickAudio() async {
     try {
-      // ⚠️ Android : FileType.custom + ['mp3'] ouvre parfois le lecteur
-      // média (Samsung, Xiaomi…) qui joue le son au tap au lieu de le
-      // sélectionner. FileType.any force le sélecteur Fichiers natif
-      // où le tap = sélection. On filtre l'extension côté client.
       final res = await FilePicker.platform.pickFiles(
-        type: FileType.any,
+        type: FileType.custom,
+        allowedExtensions: ['mp3'],
         allowMultiple: false,
-        withData: kIsWeb,
+        withData: kIsWeb, // bytes nécessaires uniquement sur web
       );
       if (res == null) return;
       final picked = res.files.single;
 
-      // Filtre extensions audio (sécurité côté client)
-      final name = picked.name.toLowerCase();
-      final isAudio = name.endsWith('.mp3') ||
-          name.endsWith('.m4a') ||
-          name.endsWith('.aac') ||
-          name.endsWith('.wav') ||
-          name.endsWith('.ogg');
-      if (!isAudio) {
+      // Sécurité : vérifie l'extension côté client
+      if (!picked.name.toLowerCase().endsWith('.mp3')) {
         _showAlert('Format non supporté',
-            'Seuls les fichiers audio (MP3, M4A, AAC, WAV, OGG) sont acceptés.');
+            'Seuls les fichiers MP3 sont acceptés.');
         return;
       }
 
